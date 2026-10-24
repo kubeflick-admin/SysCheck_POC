@@ -15,7 +15,8 @@ then renders a single **A / B / C / F** health score.
 | Module | What it does |
 | ------ | ------------ |
 | **Core specs**      | CPU, cores, RAM size/speed, GPU(s)/VRAM, motherboard, BIOS |
-| **Storage health**  | S.M.A.R.T. power-on hours, total host writes, failure-predict status |
+| **Storage health**  | A 0–100 **Drive Health %** per drive from its S.M.A.R.T. damage counters, SSD wear and the drive's own verdict, plus an estimated remaining life, in plain English |
+| **Storage page**    | Per drive: Health % bar, summary, remaining life, model / serial / firmware / interface / size, temperatures, power-on time, data written / read and the full S.M.A.R.T. table |
 | **Battery health**  | Design vs full-charge capacity, wear %, cycle count |
 | **Battery discharge** | Prompts to unplug AC, then measures the average draw (W), time per 1% and the CPU load behind it |
 | **Thermal stress**  | 45 s all-core NumPy load with live temperature graph + throttle detection (sustained clock vs base clock) |
@@ -24,6 +25,7 @@ then renders a single **A / B / C / F** health score.
 | **Touchpad test**   | Cursor-coverage grid plus left/right/double-click and scroll gesture checks |
 | **Ports test**      | Live USB plug/unplug detection per port, with USB + display-output inventory |
 | **Health score**    | Weighted A/B/C/F verdict with a plain-language per-subsystem summary |
+| **Export report**   | One self-contained HTML file (opens in any browser, prints to PDF) with the grade, every result and the full storage section; serial numbers can be hidden |
 
 Checks that ran but couldn't verify a part (no USB device plugged in, a
 sensor that can't be read, a webcam that won't open) are reported as
@@ -44,6 +46,10 @@ SysCheck_POC/
 └── syscheck/
     ├── config.py               # all thresholds + palette
     ├── scoring.py              # telemetry -> A/B/C/F grade
+    ├── export.py               # single-file HTML report
+    ├── diskhealth/             # Qt- and WMI-free drive judgement
+    │   ├── health.py           # Health % + estimated remaining life
+    │   └── describe.py         # plain-English wording, S.M.A.R.T. table rows
     ├── telemetry/              # MODULE 1 — silent hardware telemetry
     │   ├── wmi_util.py         # per-thread COM/WMI helper
     │   ├── specs.py            # CPU / RAM / GPU / board / BIOS
@@ -67,8 +73,8 @@ SysCheck_POC/
         ├── theme.py            # QSS cyber-HUD stylesheet
         ├── widgets.py          # progress ring, console, indicator, graph
         ├── main_window.py      # console rail + stacked diagnostic flow
-        └── views/              # splash, telemetry, battery, thermal, camera,
-                                #   keyboard, touchpad, ports, results
+        └── views/              # splash, telemetry, storage, battery, thermal,
+                                #   camera, keyboard, touchpad, ports, results
 ```
 
 ## Run from source
@@ -140,6 +146,19 @@ The result is `dist\SysCheck.exe`.
   without elevation; SATA drives and both Windows layers need
   Administrator. Readings a layer can't provide show as N/A rather than 0,
   and data written is only reported when its unit is known.
+- **Drive Health %**: starts at 100% and each damage counter (reallocated,
+  pending and uncorrectable sectors, NVMe media errors, ...) takes a capped
+  share away; the shares multiply, so different problems add up faster.
+  A drive that reports itself failing, a value at its failure threshold, a
+  low NVMe spare and SSD wear cap it further, and the manufacturer's own
+  value-vs-threshold figure wins when lower. Power-on hours never lower
+  health; they shorten the remaining-life estimate, which is always worded
+  as an estimate and capped at "more than 1000 days". All weights are in
+  `config.py`. Without elevation, unreadable drives show health as unknown
+  and the storage score is capped.
+- **Report**: *Export report* on the Verdict page saves
+  `SysCheck_<computer>_<date>.html`. It needs no internet and no other
+  files; use the browser's Print → Save as PDF for a PDF.
 - **GPU VRAM**: WMI's `AdapterRAM` is a signed 32-bit field (unreliable above
   4 GB); NVIDIA cards are enriched via `GPUtil` when present.
 - **Thermal sensors**: many consumer laptops don't expose a usable thermal
