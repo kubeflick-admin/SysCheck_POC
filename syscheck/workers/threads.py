@@ -9,7 +9,7 @@ objects directly.
 from __future__ import annotations
 
 import time
-from typing import Dict, Optional
+from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
@@ -31,6 +31,14 @@ class TelemetryWorker(QThread):
     component_done = Signal(str, dict)     # (name, data)
     finished_all = Signal(dict)            # full results dict
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancel = False
+
+    def cancel(self) -> None:
+        """Stop after the current stage (a WMI call can't be interrupted)."""
+        self._cancel = True
+
     def run(self) -> None:  # noqa: D401
         results: dict = {}
         stages = [
@@ -39,6 +47,8 @@ class TelemetryWorker(QThread):
             ("battery", "BATTERY ACPI", collect_battery_health),
         ]
         for i, (key, title, fn) in enumerate(stages):
+            if self._cancel:
+                return
             self.log.emit(f"==== MODULE :: {title} ====")
             try:
                 data = fn(self.log.emit)

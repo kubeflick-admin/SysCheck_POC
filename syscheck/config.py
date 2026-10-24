@@ -37,7 +37,9 @@ THERMAL_DURATION_S = 45          # length of the synthetic load (30–60s)
 THERMAL_SAMPLE_HZ = 2            # temperature samples per second
 THERMAL_CRITICAL_C = 90.0        # hard fail above this package temp
 THERMAL_WARN_C = 80.0            # caution band
-THERMAL_THROTTLE_DROP_MHZ = 300  # freq drop that flags throttling
+THERMAL_THROTTLE_DROP_MHZ = 300  # sustained clock this far below base => throttling
+THERMAL_SUSTAIN_WINDOW_S = 10    # tail of the run that gives the sustained clock
+THERMAL_STUCK_DELTA_C = 1.0      # less movement under full load => dead sensor
 
 # ─────────────────────────────────────────────────────────────────────
 # Camera clarity
@@ -65,12 +67,20 @@ BATTERY_CYCLE_FAIL = 1000
 # ─────────────────────────────────────────────────────────────────────
 # Battery discharge test (runs on battery only — prompts to unplug AC)
 # ─────────────────────────────────────────────────────────────────────
-BATTERY_DISCHARGE_DROP_PCT = 1        # target drop we time (1%)
-BATTERY_DISCHARGE_TIMEOUT_S = 150     # give up waiting for the drop after this
+BATTERY_DISCHARGE_DROP_PCT = 1        # whole-percent step we time (1%)
+# Timing a full step can take two percent-intervals (~180 s each at
+# 10 W on a 50 Wh pack), so allow for both before falling back.
+BATTERY_DISCHARGE_TIMEOUT_S = 360     # give up waiting for a full step after this
 BATTERY_DISCHARGE_SAMPLE_HZ = 1       # percent / load samples per second
+BATTERY_RATE_WINDOW_S = 20            # average the firmware discharge rate over this
 # Derived drain (watts) above which we flag an unusually thirsty battery.
 BATTERY_DRAIN_WARN_W = 35.0
 BATTERY_DRAIN_FAIL_W = 60.0
+
+# ─────────────────────────────────────────────────────────────────────
+# Keyboard continuity test
+# ─────────────────────────────────────────────────────────────────────
+KEYBOARD_COVERAGE_FAIL_PCT = 90.0   # below this => several dead keys
 
 # ─────────────────────────────────────────────────────────────────────
 # Touchpad continuity test

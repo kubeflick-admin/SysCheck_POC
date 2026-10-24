@@ -224,7 +224,9 @@ class LineGraph(QWidget):
             p.setPen(QPen(QColor(config.COL_RED), 1, Qt.DashLine))
             p.drawLine(pad, int(ty), w - pad, int(ty))
             p.setPen(QColor(config.COL_RED))
-            f = QFont(config.MONO_FONT); f.setPointSize(8); p.setFont(f)
+            f = QFont(config.MONO_FONT)
+            f.setPointSize(8)
+            p.setFont(f)
             p.drawText(w - pad - 70, int(ty) - 4, f"{self._threshold:.0f} CRIT")
 
         # Data polyline
@@ -240,7 +242,9 @@ class LineGraph(QWidget):
             # Current value readout
             last = self._data[-1]
             p.setPen(QColor(config.COL_GREEN))
-            f = QFont(config.MONO_FONT); f.setPointSize(11); f.setBold(True)
+            f = QFont(config.MONO_FONT)
+            f.setPointSize(11)
+            f.setBold(True)
             p.setFont(f)
             p.drawText(pad + 2, pad + 14, f"{last:.1f}")
         else:

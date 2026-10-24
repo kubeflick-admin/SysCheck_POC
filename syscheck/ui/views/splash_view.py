@@ -3,7 +3,7 @@ big 'INITIATE DIAGNOSTIC' action."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QPushButton, QWidget
 
 from ... import config

@@ -1,0 +1,17 @@
+# ─── SysCheck POC :: Test / lint dependencies ──────────────────────────
+# Runs headless on Linux/WSL as well as Windows: WMI collectors degrade to
+# "unavailable" off Windows and Qt uses the offscreen platform in tests.
+#
+#   python -m venv .venv-test
+#   .venv-test/bin/pip install -r requirements-dev.txt
+#   .venv-test/bin/pytest
+
+PySide6==6.7.2
+psutil==6.0.0
+numpy==1.26.4
+# Headless build: same cv2 API, no GUI/libGL dependency on Linux.
+opencv-python-headless==4.10.0.84
+
+pytest
+pytest-qt
+ruff

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Dict
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QStackedWidget)
 
@@ -150,10 +149,9 @@ class MainWindow(QMainWindow):
         self._results_view.restart_requested.connect(self._reset_flow)
 
     def _enter_battery(self) -> None:
-        # Hand the pack's full-charge energy to the discharge test so it can
-        # convert the 1%-drop time into an average draw in watts.
-        batt = self._results.get("battery") or {}
-        self._battery.set_full_mwh(batt.get("full_mwh"))
+        # Hand the telemetry battery data to the discharge step: full-charge
+        # energy converts a 1%-drop time into watts, and wear feeds its light.
+        self._battery.set_battery(self._results.get("battery"))
         self._advance(self._battery, 1)
 
     def _merge_battery(self, discharge: dict) -> None:
@@ -197,9 +195,11 @@ class MainWindow(QMainWindow):
 
     # ── graceful shutdown ─────────────────────────────────────────────
     def closeEvent(self, event) -> None:  # noqa: N802
-        # Make sure no worker thread outlives the window.
+        # Make sure no worker thread outlives the window: a QThread destroyed
+        # while still running aborts the whole process.
         for stop in (self._camera.stop_camera, self._battery.stop_worker,
-                     self._ports.stop_worker):
+                     self._ports.stop_worker, self._thermal.stop_worker,
+                     self._telemetry.stop_worker):
             try:
                 stop()
             except Exception:  # noqa: BLE001

@@ -9,9 +9,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QPushButton, QWidget
 
 from ... import config
+from ...scoring import score_thermal
 from ...workers import ThermalWorker
 from ..widgets import CircularProgress, LineGraph
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 
 class ThermalView(QWidget):
@@ -87,6 +88,11 @@ class ThermalView(QWidget):
             self._worker.cancel()
         self._cancel_btn.setEnabled(False)
 
+    def stop_worker(self) -> None:
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(5000)
+
     def _on_sample(self, elapsed: float, temp, freq, cpu: float) -> None:
         value = temp if temp is not None else cpu
         self._graph.push(value)
@@ -103,19 +109,15 @@ class ThermalView(QWidget):
         self._cancel_btn.setEnabled(False)
         self._btn.setEnabled(True)
         self._ring.set_value(100)
-        self._ring.set_caption("DONE", "THERMAL")
 
+        comp = score_thermal(result)
+        state = light_state(comp.status)
+        self._ring.set_caption("SKIPPED" if comp.status == "skip" else "DONE",
+                               "THERMAL")
         peak = result.get("peak_temp_c")
-        if result.get("overheated"):
-            state = "fail"
-        elif result.get("throttled") or (peak and peak >= config.THERMAL_WARN_C):
-            state = "warn"
-        elif result.get("temp_available"):
-            state = "pass"
-        else:
-            state = "warn"
         self._ring.set_color({"pass": config.COL_GREEN, "warn": config.COL_AMBER,
-                              "fail": config.COL_RED}[state])
+                              "fail": config.COL_RED,
+                              "idle": config.COL_TEXT_DIM}[state])
         self._peak.setText(f"peak: {peak:.0f} °C" if peak is not None
                            else "peak: sensor unavailable")
         self.status.emit("thermal", state)
