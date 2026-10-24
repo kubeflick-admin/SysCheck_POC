@@ -57,6 +57,11 @@ TBW_WARN_TB = 100.0              # host writes caution (typical SSD endurance)
 TBW_FAIL_TB = 250.0
 
 # ─────────────────────────────────────────────────────────────────────
+# Storage data collection (smartctl / Windows S.M.A.R.T. sources)
+# ─────────────────────────────────────────────────────────────────────
+SMARTCTL_TIMEOUT_S = 10          # per call, so a hung drive can't stall the scan
+
+# ─────────────────────────────────────────────────────────────────────
 # Battery health scoring
 # ─────────────────────────────────────────────────────────────────────
 BATTERY_WEAR_WARN_PCT = 20.0     # wear level caution

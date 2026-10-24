@@ -1,0 +1,20 @@
+smartmontools - bundled third-party program
+===========================================
+
+File:      smartctl.exe (unmodified)
+Version:   smartctl 7.5 2025-04-30 r5714 [x86_64-w64-mingw32] (AppVeyor)
+           Official Windows build, copied from the smartmontools 7.5
+           Windows installer (C:\Program Files\smartmontools\bin).
+SHA-256:   b5db94e5082c042be44994b7a4fa8f7b5c8e713b2ab1c9a560d8f7a7995ea27d
+           (matches doc\checksums64.txt shipped with that installer)
+
+Project:   https://www.smartmontools.org/
+Source:    https://github.com/smartmontools/smartmontools/releases/tag/RELEASE_7_5
+           https://sourceforge.net/projects/smartmontools/files/smartmontools/7.5/
+
+Licence:   GNU General Public License, version 2 or (at your option) any
+           later version. See COPYING.txt in this folder.
+
+SysCheck runs smartctl.exe as a separate program and reads its JSON
+output. smartctl is not linked into SysCheck, and SysCheck does not
+change it.

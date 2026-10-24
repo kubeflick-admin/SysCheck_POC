@@ -1,10 +1,14 @@
-"""Layer A: smartctl JSON parsing against hand-built smartctl 7.5 reports."""
+"""Layer A: smartctl JSON parsing against hand-built smartctl 7.5 reports,
+and the runner driven by a fake ``subprocess.run``."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from syscheck import config
 from syscheck.telemetry.smart_sources import smartctl
 from syscheck.telemetry.smart_sources.schema import FIELDS, new_drive
 
@@ -13,6 +17,140 @@ FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
 
 def _load(name: str) -> dict:
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+
+
+class FakeSmartctl:
+    """Stands in for subprocess.run: maps smartctl arguments to output."""
+
+    def __init__(self, outputs):
+        self.outputs = outputs
+        self.calls = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((cmd[1:], kwargs))
+        out = self.outputs[" ".join(cmd[1:])]
+        if isinstance(out, Exception):
+            raise out
+        stdout = out if isinstance(out, bytes) else json.dumps(out).encode()
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
+
+
+@pytest.fixture
+def elevated(monkeypatch):
+    monkeypatch.setattr(smartctl, "is_admin", lambda: True)
+    monkeypatch.setattr(smartctl, "find_smartctl",
+                        lambda: Path("smartctl.exe"))
+
+
+# ── locating and running smartctl ─────────────────────────────────────
+def test_finds_the_bundled_exe_in_the_source_tree(monkeypatch):
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    exe = smartctl.find_smartctl()
+    assert exe is not None
+    assert exe.parts[-3:] == ("vendor", "smartmontools", "smartctl.exe")
+
+
+def test_finds_the_exe_inside_a_pyinstaller_bundle(monkeypatch, tmp_path):
+    bundled = tmp_path / "vendor" / "smartmontools" / "smartctl.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"MZ")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert smartctl.find_smartctl() == bundled
+
+
+def test_missing_exe_in_bundle_gives_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert smartctl.find_smartctl() is None
+
+
+def test_not_elevated_still_tries_and_hints_on_failure(monkeypatch):
+    # NVMe drives are readable without elevation; SATA ones usually aren't.
+    monkeypatch.setattr(smartctl, "is_admin", lambda: False)
+    monkeypatch.setattr(smartctl, "find_smartctl",
+                        lambda: Path("smartctl.exe"))
+    log = []
+    fake = FakeSmartctl({
+        "--scan-open -j": _load("scan_open"),
+        "-a -j -d sat /dev/sda": _load("open_failed"),
+        "-a -j -d nvme /dev/nvme0": _load("nvme_healthy"),
+    })
+    monkeypatch.setattr(smartctl.subprocess, "run", fake)
+
+    drives = smartctl.collect(log.append)
+
+    assert [d["kind"] for d in drives] == ["NVMe SSD"]
+    assert any("run as Administrator" in line for line in log)
+
+
+def test_missing_exe_skips_smartctl(monkeypatch):
+    monkeypatch.setattr(smartctl, "find_smartctl", lambda: None)
+    fake = FakeSmartctl({})
+    monkeypatch.setattr(smartctl.subprocess, "run", fake)
+    assert smartctl.collect(lambda _: None) == []
+    assert fake.calls == []
+
+
+def test_is_admin_is_false_off_windows():
+    if sys.platform != "win32":
+        assert smartctl.is_admin() is False
+
+
+def test_collect_scans_then_reads_each_device_with_its_type(
+        monkeypatch, elevated):
+    fake = FakeSmartctl({
+        "--scan-open -j": _load("scan_open"),
+        "-a -j -d sat /dev/sda": _load("sata_ssd_bad_sectors"),
+        "-a -j -d nvme /dev/nvme0": _load("nvme_healthy"),
+    })
+    monkeypatch.setattr(smartctl.subprocess, "run", fake)
+
+    drives = smartctl.collect(lambda _: None)
+
+    assert [d["model"] for d in drives] == ["Samsung SSD 860 EVO 500GB",
+                                            "Samsung SSD 970 EVO Plus 500GB"]
+    assert [args for args, _ in fake.calls] == [
+        ["--scan-open", "-j"],
+        ["-a", "-j", "-d", "sat", "/dev/sda"],
+        ["-a", "-j", "-d", "nvme", "/dev/nvme0"],
+    ]
+    for _, kwargs in fake.calls:
+        assert kwargs["timeout"] == config.SMARTCTL_TIMEOUT_S
+        assert kwargs["capture_output"] is True
+        assert "creationflags" in kwargs
+
+
+def test_one_bad_device_does_not_stop_the_others(monkeypatch, elevated):
+    log = []
+    fake = FakeSmartctl({
+        "--scan-open -j": _load("scan_open"),
+        "-a -j -d sat /dev/sda": subprocess.TimeoutExpired("smartctl", 10),
+        "-a -j -d nvme /dev/nvme0": _load("nvme_healthy"),
+    })
+    monkeypatch.setattr(smartctl.subprocess, "run", fake)
+
+    drives = smartctl.collect(log.append)
+
+    assert [d["serial"] for d in drives] == ["S4EVNX0N123456A"]
+    assert any("timed out" in line for line in log)
+
+
+def test_unreadable_output_is_skipped(monkeypatch, elevated):
+    log = []
+    fake = FakeSmartctl({
+        "--scan-open -j": _load("scan_open"),
+        "-a -j -d sat /dev/sda": b"not json",
+        "-a -j -d nvme /dev/nvme0": _load("open_failed"),
+    })
+    monkeypatch.setattr(smartctl.subprocess, "run", fake)
+
+    assert smartctl.collect(log.append) == []
+    assert any("Access is denied" in line for line in log)
+
+
+def test_failed_scan_gives_no_drives(monkeypatch, elevated):
+    fake = FakeSmartctl({"--scan-open -j": OSError("cannot execute")})
+    monkeypatch.setattr(smartctl.subprocess, "run", fake)
+    assert smartctl.collect(lambda _: None) == []
 
 
 # ── schema ─────────────────────────────────────────────────────────────
@@ -156,6 +294,12 @@ def test_uncorrectable_falls_back_to_attribute_187():
     report["ata_smart_attributes"]["table"] = [a for a in table
                                                if a["id"] != 198]
     assert smartctl.parse_device(report)["uncorrectable_errors"] == 4
+
+
+def test_standard_endurance_figure_beats_vendor_wear_attribute():
+    report = _load("sata_ssd_bad_sectors")
+    report["endurance_used"] = {"current_percent": 20}
+    assert smartctl.parse_device(report)["percentage_used"] == 20
 
 
 def test_temperature_falls_back_to_attribute_low_byte():

@@ -2,7 +2,8 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = []
+datas = [('vendor\\smartmontools\\COPYING.txt', 'vendor\\smartmontools'), ('vendor\\smartmontools\\SOURCE.txt', 'vendor\\smartmontools')]
+binaries = [('vendor\\smartmontools\\smartctl.exe', 'vendor\\smartmontools')]
 hiddenimports = ['win32timezone']
 datas += collect_data_files('cv2')
 hiddenimports += collect_submodules('wmi')
@@ -12,7 +13,7 @@ hiddenimports += collect_submodules('cpuinfo')
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -35,7 +36,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=['smartctl.exe'],
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,

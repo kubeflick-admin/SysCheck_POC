@@ -37,7 +37,9 @@
     "critical_comp_time": 0,
     "temperature_sensors": [38, 45]
   },
-  "temperature": {"current": 38},
+  "spare_available": {"current_percent": 100, "threshold_percent": 10},
+  "endurance_used": {"current_percent": 2},
+  "temperature": {"op_limit_max": 85, "critical_limit_max": 86, "current": 38},
   "power_cycle_count": 1234,
   "power_on_time": {"hours": 4321},
   "nvme_self_test_log": {

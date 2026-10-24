@@ -4,16 +4,33 @@ smartctl knows thousands of drives through its drive database, so it is
 the only source that interprets vendor-specific raw values (power-on time
 units, host-write units) instead of guessing. Only its JSON output is
 parsed, never the text report.
+
+The official Windows build ships in ``vendor/smartmontools`` and is
+bundled into the PyInstaller .exe. NVMe drives are usually readable
+without elevation; SATA drives need Administrator. A drive smartctl can't
+read simply falls through to the next layer.
 """
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Dict, List, Optional
+import subprocess
+import sys
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
 
+from ... import config
 from .schema import (FLAG_FAILING, FLAG_OK, FLAG_UNKNOWN, KIND_HDD, KIND_NVME,
                      KIND_SATA_SSD, KIND_UNKNOWN, SOURCE_SMARTCTL, as_int,
                      new_drive, size_gb)
+
+LogFn = Callable[[str], None]
+
+# Where smartctl.exe lives, relative to the repo root or the PyInstaller
+# bundle (build.ps1 / SysCheck.spec put it at the same path).
+VENDOR_DIR = ("vendor", "smartmontools")
+EXE_NAME = "smartctl.exe"
 
 # smartctl's exit status is a bitmask. Bit 0 (bad command line) and bit 1
 # (device open / identify failed) mean there is no data; the other bits
@@ -43,6 +60,76 @@ UNSAFE_SHUTDOWN_NAMES = ("Unexpect_Power_Loss_Ct", "Unsafe_Shutdown_Count",
 _MIN_MAX_RE = re.compile(r"Min/Max\s+\d+/(\d+)")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Running smartctl
+# ─────────────────────────────────────────────────────────────────────
+def find_smartctl() -> Optional[Path]:
+    """The bundled smartctl.exe (frozen build or source tree), or None."""
+    bundle = getattr(sys, "_MEIPASS", None)
+    root = Path(bundle) if bundle else Path(__file__).resolve().parents[3]
+    exe = root.joinpath(*VENDOR_DIR, EXE_NAME)
+    return exe if exe.is_file() else None
+
+
+def is_admin() -> bool:
+    """True when the process is elevated; always False off Windows."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 - no windll off Windows
+        return False
+
+
+def _run_json(exe: Path, args: List[str], log: LogFn) -> Optional[dict]:
+    cmd = " ".join(args)
+    try:
+        proc = subprocess.run(
+            [str(exe), *args],
+            capture_output=True, timeout=config.SMARTCTL_TIMEOUT_S,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        log(f"[DISK] smartctl {cmd} timed out")
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log(f"[DISK] smartctl {cmd} failed: {exc}")
+        return None
+    try:
+        return json.loads(proc.stdout.decode("utf-8", errors="replace"))
+    except ValueError:
+        log(f"[DISK] smartctl {cmd} gave no JSON (exit {proc.returncode})")
+        return None
+
+
+def collect(log: LogFn) -> List[Dict[str, object]]:
+    """Every drive smartctl can read, or [] when it can't run here."""
+    exe = find_smartctl()
+    if exe is None:
+        log("[DISK] smartctl.exe not found; skipping it.")
+        return []
+
+    hint = "" if is_admin() else " (run as Administrator?)"
+    drives: List[Dict[str, object]] = []
+    for dev in parse_scan(_run_json(exe, ["--scan-open", "-j"], log)):
+        args = ["-a", "-j"]
+        if dev["type"]:
+            args += ["-d", dev["type"]]
+        args.append(dev["name"])
+        report = _run_json(exe, args, log)
+        drive = parse_device(report)
+        if drive is None:
+            why = report_messages(report) if isinstance(report, dict) else []
+            log(f"[DISK] smartctl could not read {dev['name']}"
+                + (f": {why[0]}" if why else "") + hint)
+            continue
+        drives.append(drive)
+    return drives
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Parsing (pure)
+# ─────────────────────────────────────────────────────────────────────
 def report_usable(report: object) -> bool:
     """True when a smartctl JSON report carries device data."""
     if not isinstance(report, dict):
@@ -266,6 +353,13 @@ def parse_device(report: object) -> Optional[Dict[str, object]]:
                     and isinstance(a["value"], int) and a["value"] <= 100]
             if used:
                 drive["percentage_used"] = max(used)
+
+    # smartctl's own standardised wear figure (NVMe log, or ATA device
+    # statistics) beats any vendor attribute when it is present.
+    endurance = as_int((report.get("endurance_used") or {})
+                       .get("current_percent"))
+    if endurance is not None:
+        drive["percentage_used"] = endurance
 
     drive["raw"] = raw
     return drive
