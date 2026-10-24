@@ -90,6 +90,25 @@ def build_stylesheet() -> str:
         color: {c.COL_TEXT};
     }}
 
+    QCheckBox {{
+        color: {c.COL_TEXT_DIM};
+        spacing: 8px;
+        letter-spacing: 1px;
+    }}
+    QCheckBox:hover {{ color: {c.COL_TEXT}; }}
+    QCheckBox::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {c.COL_GRID};
+        border-radius: 2px;
+        background-color: {c.COL_PANEL};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {c.COL_BLUE}; }}
+    QCheckBox::indicator:checked {{
+        border-color: {c.COL_BLUE};
+        background-color: {c.COL_BLUE};
+    }}
+
     /* Drive selector on the storage page */
     QPushButton#tab {{
         border-color: {c.COL_GRID};

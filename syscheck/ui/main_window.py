@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
         self._ports.next_requested.connect(self._show_results)
 
         self._results_view.restart_requested.connect(self._reset_flow)
+        self._results_view.log.connect(self._console.log)
 
     def _enter_storage(self) -> None:
         self._storage.set_storage(self._results.get("storage"))

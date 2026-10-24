@@ -27,6 +27,10 @@ from .diskhealth.health import SEVERITY_RANK
 # Statuses that carry no measurement and stay out of the weighted average.
 UNSCORED = ("skip", "inconclusive")
 
+# What each status is called on the verdict page and in the report.
+STATUS_WORDS = {"pass": "PASS", "warn": "CAUTION", "fail": "FAIL",
+                "inconclusive": "NOT VERIFIED", "skip": "N/A"}
+
 # How the battery discharge figure was obtained (see run_discharge_test).
 DISCHARGE_METHOD_LABELS = {
     "rate": "battery-reported draw",
@@ -354,6 +358,35 @@ def compute_overall(components: List[ComponentScore]) -> Dict[str, object]:
         grade = "C"
 
     return {"score": round(overall, 1), "grade": grade}
+
+
+def headline_for(grade: str) -> str:
+    return {
+        "A": "GRADE A — EXCELLENT CONDITION",
+        "B": "GRADE B — GOOD, MINOR WEAR",
+        "C": "GRADE C — USABLE, NEGOTIATE PRICE",
+        "F": "GRADE F — SIGNIFICANT ISSUES",
+        "N/A": "NO GRADE — NOTHING COULD BE MEASURED",
+    }.get(grade, f"GRADE {grade}")
+
+
+def subhead_for(components: List[ComponentScore]) -> str:
+    fails = [c.label for c in components if c.status == "fail"]
+    warns = [c.label for c in components if c.status == "warn"]
+    unverified = [c.label for c in components
+                  if c.status == "inconclusive"]
+    if fails:
+        text = "Failing checks: " + ", ".join(fails) + \
+            (("; caution on " + ", ".join(warns)) if warns else "")
+    elif warns:
+        text = "Worth a closer look: " + ", ".join(warns)
+    elif unverified:
+        text = "Everything that could be tested is within healthy limits."
+    else:
+        text = "All subsystems within healthy limits."
+    if unverified:
+        text += " Not verified: " + ", ".join(unverified) + "."
+    return text
 
 
 def build_report(results: Dict[str, object]) -> Dict[str, object]:

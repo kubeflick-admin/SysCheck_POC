@@ -222,3 +222,59 @@ def test_flow_visits_storage_between_telemetry_and_battery(qtbot,
     window._storage._btn.click()
     assert window._stack.currentWidget() is window._battery
     assert window._header._title.text() == "BATTERY"
+
+
+# ── report export ──────────────────────────────────────────────────────
+@pytest.fixture
+def verdict(qtbot, monkeypatch):
+    view = ResultsView()
+    qtbot.addWidget(view)
+    view.set_results({"storage": _storage("nvme_healthy")})
+    monkeypatch.setattr("syscheck.ui.views.results_view.computer_name",
+                        lambda: "TEST-PC")
+    return view
+
+
+def _save_as(monkeypatch, path):
+    offered = []
+
+    def fake_dialog(parent, caption, start, filters):
+        offered.append(start)
+        return (str(path) if path else "", "")
+    monkeypatch.setattr("syscheck.ui.views.results_view.QFileDialog."
+                        "getSaveFileName", fake_dialog)
+    return offered
+
+
+def test_export_writes_the_report_where_chosen(verdict, monkeypatch,
+                                               tmp_path):
+    offered = _save_as(monkeypatch, tmp_path / "report")   # no extension
+    logs = _record(verdict.log)
+    verdict._export.click()
+
+    assert Path(offered[0]).name.startswith("SysCheck_TEST-PC_")
+    saved = tmp_path / "report.html"
+    html = saved.read_text("utf-8")
+    assert "S4EVNX0N123456A" in html
+    assert str(saved) in verdict._saved.text()
+    assert logs[-1][0].startswith("[REPORT] Saved")
+
+
+def test_export_can_hide_serial_numbers(verdict, monkeypatch, tmp_path):
+    _save_as(monkeypatch, tmp_path / "r.html")
+    verdict._hide_serials.setChecked(True)
+    verdict._export.click()
+    assert "S4EVNX0N123456A" not in (tmp_path / "r.html").read_text("utf-8")
+
+
+def test_cancelled_export_writes_nothing(verdict, monkeypatch, tmp_path):
+    _save_as(monkeypatch, None)
+    verdict._export.click()
+    assert list(tmp_path.iterdir()) == []
+    assert verdict._saved.text() == ""
+
+
+def test_failed_export_says_why(verdict, monkeypatch, tmp_path):
+    _save_as(monkeypatch, tmp_path / "missing-folder" / "r.html")
+    verdict._export.click()
+    assert verdict._saved.text().startswith("Could not save the report")
