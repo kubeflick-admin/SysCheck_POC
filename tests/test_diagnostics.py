@@ -1,31 +1,10 @@
-"""Qt-free diagnostic models: SMART parsing, keyboard and touchpad state."""
+"""Qt-free diagnostic models: keyboard and touchpad state.
+
+S.M.A.R.T. blob parsing is covered in ``test_wmi_smart.py``.
+"""
 
 from syscheck.diagnostics.keyboard import KeyboardState, all_labels
 from syscheck.diagnostics.touchpad import GESTURES, TouchpadState
-from syscheck.telemetry.storage import (ATTR_POWER_ON_HOURS,
-                                        ATTR_TOTAL_LBA_WRITTEN,
-                                        _parse_smart_blob)
-
-
-# ── S.M.A.R.T. ─────────────────────────────────────────────────────────
-def _record(attr_id: int, raw: int) -> bytes:
-    # id, flags(2), current, worst, raw(6 LE), reserved
-    return bytes([attr_id, 0, 0, 100, 100]) + raw.to_bytes(6, "little") + b"\0"
-
-
-def test_parse_smart_blob_reads_raw_values():
-    blob = (b"\x10\x00"
-            + _record(ATTR_POWER_ON_HOURS, 12_345)
-            + _record(0, 999)                       # empty slot: ignored
-            + _record(ATTR_TOTAL_LBA_WRITTEN, 2**40))
-    blob += b"\0" * (512 - len(blob))
-    assert _parse_smart_blob(blob) == {ATTR_POWER_ON_HOURS: 12_345,
-                                       ATTR_TOTAL_LBA_WRITTEN: 2**40}
-
-
-def test_parse_smart_blob_tolerates_truncated_record():
-    # Only the first raw byte survives the cut; parsing must not raise.
-    assert _parse_smart_blob(b"\x10\x00" + _record(9, 7)[:6]) == {9: 7}
 
 
 # ── keyboard ───────────────────────────────────────────────────────────

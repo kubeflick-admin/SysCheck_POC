@@ -58,6 +58,8 @@ UNSAFE_SHUTDOWN_NAMES = ("Unexpect_Power_Loss_Ct", "Unsafe_Shutdown_Count",
                          "Power-Off_Retract_Count")
 
 _MIN_MAX_RE = re.compile(r"Min/Max\s+\d+/(\d+)")
+_SD_NAME_RE = re.compile(r"^/dev/sd([a-z]{1,2})$")
+_PD_NAME_RE = re.compile(r"^/dev/pd(\d+)$")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -155,6 +157,23 @@ def parse_scan(report: object) -> List[Dict[str, Optional[str]]]:
             continue
         devices.append({"name": dev["name"], "type": dev.get("type")})
     return devices
+
+
+def disk_number(device_name: object) -> Optional[int]:
+    """Windows disk number behind a smartctl device name.
+
+    On Windows ``/dev/sda`` is ``\\\\.\\PhysicalDrive0`` (``/dev/sdaa`` is
+    26) and ``/dev/pdN`` is ``PhysicalDriveN``; other forms have none.
+    """
+    name = str(device_name or "")
+    match = _SD_NAME_RE.match(name)
+    if match:
+        n = 0
+        for ch in match.group(1):
+            n = n * 26 + (ord(ch) - ord("a") + 1)
+        return n - 1
+    match = _PD_NAME_RE.match(name)
+    return int(match.group(1)) if match else None
 
 
 def ata_host_writes_tb(name: Optional[str], raw: Optional[int],
@@ -298,6 +317,7 @@ def parse_device(report: object) -> Optional[Dict[str, object]]:
     )
     raw: Dict[str, object] = {
         "device": device.get("name"),
+        "disk_number": disk_number(device.get("name")),
         "device_type": device.get("type"),
         "protocol": protocol,
         "firmware": report.get("firmware_version"),

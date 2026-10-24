@@ -60,6 +60,9 @@ TBW_FAIL_TB = 250.0
 # Storage data collection (smartctl / Windows S.M.A.R.T. sources)
 # ─────────────────────────────────────────────────────────────────────
 SMARTCTL_TIMEOUT_S = 10          # per call, so a hung drive can't stall the scan
+# Sizes within this fraction count as the same drive when matching sources
+# by model + size (Win32_DiskDrive rounds size down to whole cylinders).
+DRIVE_SIZE_MATCH_TOLERANCE = 0.01
 
 # ─────────────────────────────────────────────────────────────────────
 # Battery health scoring
