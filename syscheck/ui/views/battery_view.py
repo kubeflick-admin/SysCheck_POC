@@ -2,10 +2,10 @@
 
 Static wear (design vs full-charge capacity) is gathered silently during
 the telemetry sweep; this step adds the *dynamic* check the operator asked
-for: with the charger pulled, how long does the pack take to shed one
-percent, and under how much CPU load? It drives :class:`BatteryDischargeWorker`,
-nagging to unplug AC first, then clocks the 1% drop and derives the draw in
-watts.
+for: with the charger pulled, how much power does the laptop draw, how
+long does 1% last, and under how much CPU load? It drives
+:class:`BatteryDischargeWorker`, nagging to unplug AC first. The status
+light is scored on the wear data and the discharge result together.
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QPushButton, QWidget
 
 from ... import config
+from ...scoring import DISCHARGE_METHOD_LABELS, score_battery
 from ...workers import BatteryDischargeWorker
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 
 class BatteryView(QWidget):
@@ -31,7 +32,7 @@ class BatteryView(QWidget):
         super().__init__(parent)
         self._worker: Optional[BatteryDischargeWorker] = None
         self._result: Dict[str, object] = {}
-        self._full_mwh: Optional[int] = None
+        self._battery: Dict[str, object] = {}   # telemetry wear/capacity data
         self._skipped = False
 
         root = QVBoxLayout(self)
@@ -47,9 +48,9 @@ class BatteryView(QWidget):
         intro = QVBoxLayout()
         intro.addWidget(label("BATTERY DISCHARGE TEST", "h2"))
         intro.addWidget(label(
-            "Wear is already measured from capacity. This step times a live "
-            f"{config.BATTERY_DISCHARGE_DROP_PCT}% discharge: unplug the "
-            "charger and we clock how long 1% takes and the load driving it.",
+            "Wear is already measured from capacity. This step checks a live "
+            "discharge: unplug the charger and we measure the power draw, how "
+            "long 1% lasts, and the load driving it.",
             "dim"))
         self._prompt = label("", "mono")
         self._prompt.setWordWrap(True)
@@ -82,9 +83,10 @@ class BatteryView(QWidget):
         root.addLayout(btn_row)
 
     # ── context injection ──────────────────────────────────────────────
-    def set_full_mwh(self, full_mwh: Optional[int]) -> None:
-        """Supplied by the telemetry sweep so draw can be derived in watts."""
-        self._full_mwh = full_mwh
+    def set_battery(self, battery: Optional[Dict[str, object]]) -> None:
+        """Telemetry battery data: full-charge energy lets the draw be
+        derived in watts, and wear feeds the combined status light."""
+        self._battery = dict(battery or {})
 
     # ── lifecycle ───────────────────────────────────────────────────────
     def start(self) -> None:
@@ -99,7 +101,7 @@ class BatteryView(QWidget):
         self._readout.setText("· waiting for the charger to be removed …")
         self.status.emit("battery", "active")
 
-        self._worker = BatteryDischargeWorker(self._full_mwh)
+        self._worker = BatteryDischargeWorker(self._battery.get("full_mwh"))
         self._worker.log.connect(self.log.emit)
         self._worker.sample.connect(self._on_sample)
         self._worker.finished_discharge.connect(self._on_finished)
@@ -127,7 +129,7 @@ class BatteryView(QWidget):
             self._ring.set_color(config.COL_BLUE)
             self._ring.set_value(frac)
             self._ring.set_caption(pct_txt, "ON BATT")
-            self._prompt.setText("Running on battery — timing the 1% drop. "
+            self._prompt.setText("Running on battery — measuring the draw. "
                                  "Keep the charger unplugged.")
             self._readout.setText(
                 self._row("CHARGE", pct_txt)
@@ -142,17 +144,18 @@ class BatteryView(QWidget):
         self._btn.setEnabled(True)
         self._ring.set_value(100)
 
-        state = self._state_for(result)
+        # The light reflects wear + discharge together, exactly as scored.
+        state = light_state(
+            score_battery({**self._battery, "discharge": result}).status)
+        ring_state = state if self._measured(result) else "idle"
         self._ring.set_color({"pass": config.COL_GREEN, "warn": config.COL_AMBER,
                               "fail": config.COL_RED,
-                              "idle": config.COL_TEXT_DIM}[state])
+                              "idle": config.COL_TEXT_DIM}[ring_state])
         self._ring.set_caption("DONE", "DISCHARGE")
         self._prompt.setText("Discharge test complete — you can reconnect the "
                              "charger now.")
         self._readout.setText(self._summary_html(result))
-        # The discharge result augments (not replaces) the wear status light.
-        if state != "idle":
-            self.status.emit("battery", state)
+        self.status.emit("battery", state)
         self.finished.emit(result)
 
     # ── formatting ────────────────────────────────────────────────────────
@@ -165,33 +168,26 @@ class BatteryView(QWidget):
         if not r.get("ran"):
             return (f"<span style='color:{config.COL_AMBER}'>· "
                     f"{r.get('reason') or 'Test did not run.'}</span>")
-        spp = r.get("seconds_per_pct")
-        if spp is None:
+        if not self._measured(r):
             return (f"<span style='color:{config.COL_AMBER}'>· "
                     f"{r.get('reason') or 'Could not determine a discharge rate.'}"
                     f"</span>")
-        kind = "measured" if r.get("measured") else "system estimate"
-        out = self._row("RATE", f"{spp:.0f}s per 1%  ({kind})")
-        if r.get("avg_cpu_pct") is not None:
-            out += self._row("CPU LOAD", f"{r['avg_cpu_pct']:.0f}% avg")
+        kind = DISCHARGE_METHOD_LABELS.get(r.get("method"), "measured")
+        out = self._row("METHOD", kind)
         if r.get("drain_w") is not None:
             out += self._row("DRAW", f"≈ {r['drain_w']:.1f} W")
+        if r.get("seconds_per_pct") is not None:
+            out += self._row("RATE", f"{r['seconds_per_pct']:.0f}s per 1%")
+        if r.get("avg_cpu_pct") is not None:
+            out += self._row("CPU LOAD", f"{r['avg_cpu_pct']:.0f}% avg")
         if r.get("start_pct") is not None and r.get("end_pct") is not None:
             out += self._row("CHARGE", f"{r['start_pct']}% → {r['end_pct']}%")
         return out
 
     @staticmethod
-    def _state_for(r: dict) -> str:
-        if not r.get("ran") or r.get("seconds_per_pct") is None:
-            return "idle"   # inconclusive — leave the wear verdict standing
-        drain = r.get("drain_w")
-        if drain is None:
-            return "pass"
-        if drain >= config.BATTERY_DRAIN_FAIL_W:
-            return "fail"
-        if drain >= config.BATTERY_DRAIN_WARN_W:
-            return "warn"
-        return "pass"
+    def _measured(r: dict) -> bool:
+        return bool(r.get("ran")) and (r.get("drain_w") is not None
+                                       or r.get("seconds_per_pct") is not None)
 
     # ── skip ────────────────────────────────────────────────────────────
     def _skip(self) -> None:
@@ -199,5 +195,7 @@ class BatteryView(QWidget):
         self.stop_worker()
         self._result = {"ran": False, "skipped": True,
                         "reason": "Discharge test skipped."}
+        self.status.emit("battery", light_state(score_battery(
+            {**self._battery, "discharge": self._result}).status))
         self.finished.emit(self._result)
         self.next_requested.emit()

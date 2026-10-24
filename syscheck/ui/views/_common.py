@@ -1,4 +1,5 @@
-"""Shared view helpers: panel frames, titled labels, a step header strip."""
+"""Shared view helpers: panel frames, titled labels, a step header strip,
+and the scoring-status -> indicator-light mapping."""
 
 from __future__ import annotations
 
@@ -9,6 +10,15 @@ from PySide6.QtWidgets import (QFrame, QLabel, QVBoxLayout, QHBoxLayout,
                                QWidget, QSizePolicy)
 
 from ... import config
+
+# ComponentScore.status -> IndicatorLight state. "Couldn't verify" is amber.
+_LIGHT_STATE = {"pass": "pass", "warn": "warn", "fail": "fail",
+                "inconclusive": "warn", "skip": "idle"}
+
+
+def light_state(status: str) -> str:
+    """Indicator-light state for a :mod:`syscheck.scoring` status."""
+    return _LIGHT_STATE.get(status, "idle")
 
 
 def panel(accent: bool = False) -> QFrame:

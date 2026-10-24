@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton, QWidget,
 from ... import config
 from ...workers import CameraWorker
 from ...diagnostics.camera import classify_sharpness, evaluate_delta
+from ...scoring import score_camera
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 
 class CameraView(QWidget):
@@ -120,9 +121,15 @@ class CameraView(QWidget):
 
     def _on_error(self, msg: str) -> None:
         self._video.setText(f"⚠  {msg}")
-        self._prompt.setText("Webcam unavailable — you can skip this test.")
         self._action_btn.setEnabled(False)
-        self.status.emit("camera", "warn")
+        if self._result:
+            return   # a reading was already captured; keep it
+        # A webcam that won't open is unverified, not a skipped test.
+        self._result = {"unavailable": True, "reason": msg}
+        self._prompt.setText("Webcam unavailable — it will be reported as "
+                             "not verified. Proceed when ready.")
+        self._next_btn.setEnabled(True)
+        self.status.emit("camera", light_state(score_camera(self._result).status))
 
     def _on_action(self) -> None:
         score = self._smoothed
@@ -132,7 +139,6 @@ class CameraView(QWidget):
             self.log.emit(f"[CAM] Baseline focus score = {score:.1f} ({kind}).")
             if kind == "sharp":
                 self._prompt.setText("✓ Image is sharp. Webcam looks good.")
-                self.status.emit("camera", "pass")
                 self._finalise(score, blurry=False, improved=False)
             else:
                 self._prompt.setText(
@@ -155,7 +161,6 @@ class CameraView(QWidget):
                 self._prompt.setText(
                     "No real improvement after cleaning — the lens or sensor "
                     "may be physically degraded.")
-            self.status.emit("camera", "pass" if kind == "sharp" else "warn")
             self._finalise(score, blurry=(kind == "blurry"), improved=improved)
 
     def _finalise(self, score: float, blurry: bool, improved: bool) -> None:
@@ -163,10 +168,12 @@ class CameraView(QWidget):
                         "blurry": blurry, "improved": improved}
         self._action_btn.setEnabled(False)
         self._next_btn.setEnabled(True)
+        self.status.emit("camera", light_state(score_camera(self._result).status))
 
     def _skip(self) -> None:
-        self._result = {"skipped": True, "reason": "Camera test skipped."}
-        self.status.emit("camera", "idle")
+        if not self._result.get("unavailable"):
+            self._result = {"skipped": True, "reason": "Camera test skipped."}
+            self.status.emit("camera", "idle")
         self._continue()
 
     def _continue(self) -> None:

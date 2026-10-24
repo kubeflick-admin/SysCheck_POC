@@ -10,9 +10,10 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QWidget)
 
 from ... import config
+from ...scoring import score_battery, score_storage
 from ...workers import TelemetryWorker
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 
 def _card(title: str) -> tuple:
@@ -93,6 +94,12 @@ class TelemetryView(QWidget):
         self._worker.finished_all.connect(self._on_finished)
         self._worker.start()
 
+    def stop_worker(self) -> None:
+        # A WMI query in flight can't be interrupted; stop after the stage.
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(10000)
+
     # ── slots ─────────────────────────────────────────────────────────
     def _on_progress(self, pct: int) -> None:
         self._ring.set_value(pct)
@@ -103,10 +110,12 @@ class TelemetryView(QWidget):
             self._sys_body.setText(self._fmt_specs(data))
         elif key == "storage":
             self._stor_body.setText(self._fmt_storage(data))
-            self.status.emit("storage", self._storage_state(data))
+            self.status.emit("storage",
+                             light_state(score_storage(data).status))
         elif key == "battery":
             self._batt_body.setText(self._fmt_battery(data))
-            self.status.emit("battery", self._battery_state(data))
+            self.status.emit("battery",
+                             light_state(score_battery(data).status))
 
     def _on_finished(self, results: dict) -> None:
         self._results = results
@@ -167,28 +176,8 @@ class TelemetryView(QWidget):
             return "· no battery (desktop)"
         cycles = d.get("cycles")
         cycles_str = str(cycles) if cycles is not None else "n/a"
-        return (self._row("WEAR", f"{d.get('wear_pct', '?')}%")
-                + self._row("DESIGN", f"{d.get('design_mwh', '?')} mWh")
-                + self._row("FULL", f"{d.get('full_mwh', '?')} mWh")
-                + self._row("CYCLES", cycles_str))
-
-    # ── status mapping for the indicator lights ───────────────────────
-    @staticmethod
-    def _storage_state(d: dict) -> str:
-        for dr in d.get("drives", []):
-            if dr.get("health") == "FAILING":
-                return "fail"
-        return "pass"
-
-    @staticmethod
-    def _battery_state(d: dict) -> str:
-        if not d.get("present"):
-            return "idle"
         wear = d.get("wear_pct")
-        if wear is None:
-            return "warn"
-        if wear >= config.BATTERY_WEAR_FAIL_PCT:
-            return "fail"
-        if wear >= config.BATTERY_WEAR_WARN_PCT:
-            return "warn"
-        return "pass"
+        return (self._row("WEAR", f"{wear}%" if wear is not None else "n/a")
+                + self._row("DESIGN", f"{d.get('design_mwh') or '?'} mWh")
+                + self._row("FULL", f"{d.get('full_mwh') or '?'} mWh")
+                + self._row("CYCLES", cycles_str))

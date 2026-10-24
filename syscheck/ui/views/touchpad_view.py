@@ -16,8 +16,9 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton, QWidget)
 
 from ... import config
 from ...diagnostics.touchpad import TouchpadState, GESTURES
+from ...scoring import score_touchpad
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 _GESTURE_LABELS = dict(GESTURES)
 
@@ -176,13 +177,8 @@ class TouchpadView(QWidget):
         self._result = summary
         cov = summary["coverage_pct"]
         missing = summary["missing_gestures"]
-        if cov >= config.TOUCHPAD_COVERAGE_WARN_PCT and not missing:
-            state = "pass"
-        elif cov >= config.TOUCHPAD_COVERAGE_FAIL_PCT:
-            state = "warn"
-        else:
-            state = "fail"
-        self.status.emit("touchpad", state)
+        self.status.emit("touchpad",
+                         light_state(score_touchpad(summary).status))
         self.log.emit(f"[PAD] Coverage {cov}% — "
                       f"{len(missing)} gesture(s) not demonstrated.")
         self.finished.emit(self._result)

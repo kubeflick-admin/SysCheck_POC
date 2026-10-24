@@ -15,11 +15,13 @@ from ..widgets import CircularProgress
 from ._common import label, panel, hline
 
 _GRADE_COLOR = {"A": config.COL_GREEN, "B": config.COL_BLUE,
-                "C": config.COL_AMBER, "F": config.COL_RED}
+                "C": config.COL_AMBER, "F": config.COL_RED,
+                "N/A": config.COL_TEXT_DIM}
 _STATUS_COLOR = {"pass": config.COL_GREEN, "warn": config.COL_AMBER,
-                 "fail": config.COL_RED, "skip": config.COL_TEXT_DIM}
+                 "fail": config.COL_RED, "inconclusive": config.COL_AMBER,
+                 "skip": config.COL_TEXT_DIM}
 _STATUS_WORD = {"pass": "PASS", "warn": "CAUTION", "fail": "FAIL",
-                "skip": "N/A"}
+                "inconclusive": "NOT VERIFIED", "skip": "N/A"}
 
 
 class ResultsView(QWidget):
@@ -72,9 +74,11 @@ class ResultsView(QWidget):
         grade = overall["grade"]
         color = _GRADE_COLOR.get(grade, config.COL_TEXT)
 
+        score = overall["score"]
         self._grade_ring.set_color(color)
-        self._grade_ring.set_value(overall["score"])
-        self._grade_ring.set_caption(grade, f"{overall['score']:.0f}/100")
+        self._grade_ring.set_value(score or 0)
+        self._grade_ring.set_caption(
+            grade, f"{score:.0f}/100" if score is not None else "NO DATA")
 
         self._headline.setText(self._headline_for(grade))
         self._headline.setStyleSheet(f"color:{color};")
@@ -123,15 +127,24 @@ class ResultsView(QWidget):
             "B": "GRADE B — GOOD, MINOR WEAR",
             "C": "GRADE C — USABLE, NEGOTIATE PRICE",
             "F": "GRADE F — SIGNIFICANT ISSUES",
+            "N/A": "NO GRADE — NOTHING COULD BE MEASURED",
         }.get(grade, f"GRADE {grade}")
 
     @staticmethod
     def _subhead_for(components: List[ComponentScore]) -> str:
         fails = [c.label for c in components if c.status == "fail"]
         warns = [c.label for c in components if c.status == "warn"]
+        unverified = [c.label for c in components
+                      if c.status == "inconclusive"]
         if fails:
-            return "Failing checks: " + ", ".join(fails) + \
+            text = "Failing checks: " + ", ".join(fails) + \
                 (("; caution on " + ", ".join(warns)) if warns else "")
-        if warns:
-            return "Worth a closer look: " + ", ".join(warns)
-        return "All subsystems within healthy limits."
+        elif warns:
+            text = "Worth a closer look: " + ", ".join(warns)
+        elif unverified:
+            text = "Everything that could be tested is within healthy limits."
+        else:
+            text = "All subsystems within healthy limits."
+        if unverified:
+            text += " Not verified: " + ", ".join(unverified) + "."
+        return text

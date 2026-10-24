@@ -17,13 +17,17 @@ then renders a single **A / B / C / F** health score.
 | **Core specs**      | CPU, cores, RAM size/speed, GPU(s)/VRAM, motherboard, BIOS |
 | **Storage health**  | S.M.A.R.T. power-on hours, total host writes, failure-predict status |
 | **Battery health**  | Design vs full-charge capacity, wear %, cycle count |
-| **Battery discharge** | Prompts to unplug AC, then times a live 1% drop and derives the average draw (W) and CPU load behind it |
-| **Thermal stress**  | 45 s all-core NumPy load with live temperature graph + throttle detection |
+| **Battery discharge** | Prompts to unplug AC, then measures the average draw (W), time per 1% and the CPU load behind it |
+| **Thermal stress**  | 45 s all-core NumPy load with live temperature graph + throttle detection (sustained clock vs base clock) |
 | **Camera clarity**  | Live webcam feed, Laplacian-variance focus score, clean-the-lens re-check |
 | **Keyboard test**   | "Piano roll" layout that lights each key as it registers |
 | **Touchpad test**   | Cursor-coverage grid plus left/right/double-click and scroll gesture checks |
 | **Ports test**      | Live USB plug/unplug detection per port, with USB + display-output inventory |
 | **Health score**    | Weighted A/B/C/F verdict with a plain-language per-subsystem summary |
+
+Checks that ran but couldn't verify a part (no USB device plugged in, a
+sensor that can't be read, a webcam that won't open) are reported as
+**Not verified**. They are left out of the grade instead of failing it.
 
 ## Project layout
 
@@ -31,8 +35,11 @@ then renders a single **A / B / C / F** health score.
 SysCheck_POC/
 ├── main.py                     # entry point
 ├── requirements.txt
+├── requirements-dev.txt        # test / lint dependencies
+├── pyproject.toml              # pytest + ruff settings
 ├── build.ps1                   # PyInstaller build script
 ├── README.md
+├── tests/                      # headless pytest suite (fake hardware)
 └── syscheck/
     ├── config.py               # all thresholds + palette
     ├── scoring.py              # telemetry -> A/B/C/F grade
@@ -40,7 +47,7 @@ SysCheck_POC/
     │   ├── wmi_util.py         # per-thread COM/WMI helper
     │   ├── specs.py            # CPU / RAM / GPU / board / BIOS
     │   ├── storage.py          # S.M.A.R.T. parsing
-    │   ├── battery.py          # ACPI + powercfg report, + 1%-drop discharge test
+    │   ├── battery.py          # ACPI + powercfg report, + discharge test
     │   ├── thermal.py          # synthetic load + sensor sampling
     │   └── ports.py            # USB enumeration + display-output detection
     ├── diagnostics/            # MODULE 2 — user-guided (Qt-free logic)
@@ -66,7 +73,32 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Requires **Python 3.11+** on Windows 10/11.
+Requires **Python 3.11 or 3.12** on Windows 10/11. The pinned dependencies
+have no wheels for 3.13+ yet. Use the python.org installer, not the
+Microsoft Store placeholder.
+
+You don't need to rebuild the .exe to try a change: run `python main.py`
+again. From a WSL checkout, a Windows venv can run it in place:
+
+```powershell
+C:\dev\syscheck-venv\Scripts\python \\wsl.localhost\Ubuntu\home\<user>\SysCheck_POC\main.py
+```
+
+## Tests
+
+The scoring, diagnostics, discharge and thermal logic, and the views, are
+tested headlessly. Hardware readings are faked, so the suite runs on
+Linux/WSL or Windows with no laptop-specific setup:
+
+```bash
+python -m venv .venv-test
+.venv-test/bin/pip install -r requirements-dev.txt
+.venv-test/bin/pytest
+.venv-test/bin/ruff check .
+```
+
+Real-hardware behaviour (WMI, sensors, webcam, USB) still needs a manual
+run on Windows, preferably elevated.
 
 ## Build a standalone .exe
 
@@ -93,14 +125,22 @@ The result is `dist\SysCheck.exe`.
 - **GPU VRAM**: WMI's `AdapterRAM` is a signed 32-bit field (unreliable above
   4 GB); NVIDIA cards are enriched via `GPUtil` when present.
 - **Thermal sensors**: many consumer laptops don't expose a usable thermal
-  zone to user space; the test then falls back to clock-based throttle
-  detection and reports the sensor as unavailable.
-- **Keyboard right-hand modifiers**: left/right Shift are told apart by scan
-  code; right Ctrl/Alt may remain "unconfirmed" on some layouts.
+  zone to user space, or expose one that never changes. Either way the test
+  reports the sensor as unavailable and falls back to clock-based throttle
+  detection. Throttling means the clock held at the end of the run is well
+  below the CPU's base clock. Dropping from turbo back to base is normal.
+  With neither a sensor nor a throttle signal, thermals are *Not verified*.
+  Stopping the test early leaves it out of the grade.
+- **Keyboard**: left/right Shift, Ctrl and Alt are told apart by Windows scan
+  code. `Fn` is not tested because it never reaches the OS. Hold `Fn` for
+  F-keys that default to media functions.
 - **Battery discharge**: the laptop must run off the battery, so the step waits
-  for the charger to be removed before timing a 1% drop. Windows reports charge
-  as whole percentages, so if a full 1% hasn't dropped within the timeout the
-  tool falls back to the OS's own `secsleft` estimate (flagged as *estimated*).
+  for the charger to be removed. It then uses the battery's own reported
+  discharge rate (`BatteryStatus.DischargeRate`) when the firmware provides
+  one. Otherwise it times a *full* 1% step from one whole-percent drop to the
+  next. Timing from the unplug would catch only part of a percent and
+  overstate the draw. If no full step happens within the timeout, the tool
+  falls back to the OS's own `secsleft` estimate (flagged as an estimate).
   Reconnecting AC mid-test voids the reading.
 - **Ports test**: an empty port can't be verified by software, so the check is
   driven by live USB arrival/removal events — plug a device into each port in
