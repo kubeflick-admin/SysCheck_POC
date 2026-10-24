@@ -40,13 +40,20 @@ SysCheck_POC/
 ├── build.ps1                   # PyInstaller build script
 ├── README.md
 ├── tests/                      # headless pytest suite (fake hardware)
+├── vendor/smartmontools/       # bundled smartctl.exe + licence + source note
 └── syscheck/
     ├── config.py               # all thresholds + palette
     ├── scoring.py              # telemetry -> A/B/C/F grade
     ├── telemetry/              # MODULE 1 — silent hardware telemetry
     │   ├── wmi_util.py         # per-thread COM/WMI helper
     │   ├── specs.py            # CPU / RAM / GPU / board / BIOS
-    │   ├── storage.py          # S.M.A.R.T. parsing
+    │   ├── storage.py          # drive list + layered S.M.A.R.T. collection
+    │   ├── smart_sources/      # one module per S.M.A.R.T. source
+    │   │   ├── schema.py       # normalised per-drive record
+    │   │   ├── smartctl.py     # A: bundled smartctl, JSON output
+    │   │   ├── reliability.py  # B: MSFT_StorageReliabilityCounter
+    │   │   ├── wmi_smart.py    # C: MSStorageDriver_FailurePredict* blobs
+    │   │   └── matching.py     # same drive across sources
     │   ├── battery.py          # ACPI + powercfg report, + discharge test
     │   ├── thermal.py          # synthetic load + sensor sampling
     │   └── ports.py            # USB enumeration + display-output detection
@@ -112,16 +119,27 @@ Or the exact one-liner (no console window):
 ```powershell
 pyinstaller --noconfirm --clean --onefile --windowed --name SysCheck ^
   --collect-submodules wmi --collect-submodules cpuinfo ^
-  --collect-data cv2 --hidden-import win32timezone main.py
+  --collect-data cv2 --hidden-import win32timezone ^
+  --add-binary "vendor\smartmontools\smartctl.exe;vendor\smartmontools" ^
+  --add-data "vendor\smartmontools\COPYING.txt;vendor\smartmontools" ^
+  --add-data "vendor\smartmontools\SOURCE.txt;vendor\smartmontools" ^
+  --upx-exclude smartctl.exe main.py
 ```
 
 The result is `dist\SysCheck.exe`.
 
 ## Notes & limitations
 
-- **Administrator rights**: S.M.A.R.T. attributes (`MSStorageDriver_*`) and
-  ACPI thermal zones (`MSAcpi_ThermalZoneTemperature`) frequently require
+- **Administrator rights**: ACPI thermal zones
+  (`MSAcpi_ThermalZoneTemperature`) and most drive health data need
   elevation. Without it the app still runs and marks those fields N/A.
+- **Drive health sources**: each drive is read by the first of three layers
+  that works: the bundled `smartctl` (JSON output), then Windows'
+  `MSFT_StorageReliabilityCounter`, then the raw ATA S.M.A.R.T. blobs
+  (`MSStorageDriver_*`). NVMe drives are usually readable by `smartctl`
+  without elevation; SATA drives and both Windows layers need
+  Administrator. Readings a layer can't provide show as N/A rather than 0,
+  and data written is only reported when its unit is known.
 - **GPU VRAM**: WMI's `AdapterRAM` is a signed 32-bit field (unreliable above
   4 GB); NVIDIA cards are enriched via `GPUtil` when present.
 - **Thermal sensors**: many consumer laptops don't expose a usable thermal
@@ -146,3 +164,14 @@ The result is `dist\SysCheck.exe`.
   driven by live USB arrival/removal events — plug a device into each port in
   turn. HDMI/DisplayPort outputs are listed for reference but not actively
   exercised.
+
+## Third-party software
+
+SysCheck bundles **smartctl** from [smartmontools](https://www.smartmontools.org/)
+(version 7.5, official Windows build, unmodified) in `vendor/smartmontools/`.
+smartmontools is © Bruce Allen, Christian Franke and contributors, and is
+licensed under the GNU GPL v2 or later; see
+`vendor/smartmontools/COPYING.txt`. `vendor/smartmontools/SOURCE.txt` lists
+the exact build and where to get its source. SysCheck runs `smartctl.exe`
+as a separate program and reads its JSON output; it is not linked into
+SysCheck.
