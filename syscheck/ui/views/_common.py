@@ -10,15 +10,25 @@ from PySide6.QtWidgets import (QFrame, QLabel, QVBoxLayout, QHBoxLayout,
                                QWidget, QSizePolicy)
 
 from ... import config
+from ...scoring import _band_from_status
 
 # ComponentScore.status -> IndicatorLight state. "Couldn't verify" is amber.
 _LIGHT_STATE = {"pass": "pass", "warn": "warn", "fail": "fail",
                 "inconclusive": "warn", "skip": "idle"}
+_BAND_COLOR = {"pass": config.COL_GREEN, "warn": config.COL_AMBER,
+               "fail": config.COL_RED}
 
 
 def light_state(status: str) -> str:
     """Indicator-light state for a :mod:`syscheck.scoring` status."""
     return _LIGHT_STATE.get(status, "idle")
+
+
+def health_color(pct: Optional[float]) -> str:
+    """Colour for a drive Health %, on the same bands as the score."""
+    if pct is None:
+        return config.COL_TEXT_DIM
+    return _BAND_COLOR[_band_from_status(pct)]
 
 
 def panel(accent: bool = False) -> QFrame:

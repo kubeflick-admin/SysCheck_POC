@@ -100,6 +100,7 @@ class Reason:
     detail: str               # technical: attribute, raw value, effect
     severity: str = "warn"    # info | warn | fail
     loss: float = 0.0         # share of health it removed (0-1), for ranking
+    key: object = ""          # what it is about: attribute id, "wear", ...
 
 
 @dataclass
@@ -251,18 +252,18 @@ def _failing_reason(drive: Dict[str, object]) -> Reason:
             + "; ".join(bits or ["unknown cause"])
             + "). Back up your data now.",
             f"NVMe critical warning 0x{critical:02X} → health capped at "
-            f"{cap}%", "fail", 1.0)
+            f"{cap}%", "fail", 1.0, "failing")
     if drive.get("source") in (SOURCE_RELIABILITY, SOURCE_NONE):
         return Reason(
             "Windows reports this drive as unhealthy. Back up your data now "
             "and replace the drive.",
             f"Windows HealthStatus: Unhealthy → health capped at {cap}%",
-            "fail", 1.0)
+            "fail", 1.0, "failing")
     return Reason(
         "The drive's own self-check says it is failing. Back up your data "
         "now and replace the drive.",
         f"S.M.A.R.T. overall health: FAILED → health capped at {cap}%",
-        "fail", 1.0)
+        "fail", 1.0, "failing")
 
 
 def _wear_reason(used: int) -> Reason:
@@ -270,17 +271,17 @@ def _wear_reason(used: int) -> Reason:
               f"{max(0, 100 - used)}%")
     if used < 50:
         return Reason(f"{used}% of rated life used, plenty left.", detail,
-                      "info", used / 100)
+                      "info", used / 100, "wear")
     if used < config.SSD_WEAR_WARN_PCT:
         return Reason(f"{used}% of rated life used, a fair amount left.",
-                      detail, "info", used / 100)
+                      detail, "info", used / 100, "wear")
     if used < 100:
         return Reason(f"{used}% of rated life used. It is nearing the end of "
                       "its rated life; plan to replace it.", detail, "warn",
-                      used / 100)
+                      used / 100, "wear")
     return Reason(f"All of its rated life is used up ({used}%). It may keep "
                   "working, but could fail without warning; replace it.",
-                  detail, "fail", 1.0)
+                  detail, "fail", 1.0, "wear")
 
 
 def compute_health(drive: Dict[str, object]) -> HealthResult:
@@ -303,7 +304,7 @@ def compute_health(drive: Dict[str, object]) -> HealthResult:
             _PENALTY_TEXT[key](count),
             f"{label}: {count:,} → -{loss * 100:.1f}% "
             f"(weight {weight * 100:g}% each, max {max_loss * 100:g}%)",
-            "warn" if 1 - loss >= _FAIL_BELOW else "fail", loss))
+            "warn" if 1 - loss >= _FAIL_BELOW else "fail", loss, key))
 
     crc = as_int(drive.get("crc_errors"))
     if crc:
@@ -312,7 +313,7 @@ def compute_health(drive: Dict[str, object]) -> HealthResult:
             "laptop. This usually means a loose or faulty connector or cable, "
             "not a worn drive.",
             f"UDMA CRC errors (ID 199): {crc:,} → no effect on health "
-            "(cable / connector)", "info"))
+            "(cable / connector)", "info", 0.0, 199))
 
     # Caps: health can't be better than what the drive itself says.
     flag = drive.get("health_flag")
@@ -326,7 +327,7 @@ def compute_health(drive: Dict[str, object]) -> HealthResult:
             "Windows reports a warning for this drive. Keep backups and check "
             "it again soon.",
             f"Windows HealthStatus: Warning → health capped at {cap}%",
-            "warn", 1 - cap / 100))
+            "warn", 1 - cap / 100, "warning"))
 
     crossed = [a for a in attrs if threshold_crossed(a)
                and a.get("id") not in config.HEALTH_THRESHOLD_IGNORE_IDS]
@@ -341,7 +342,7 @@ def compute_health(drive: Dict[str, object]) -> HealthResult:
             "At or below threshold: " + ", ".join(
                 f"{_attr_label(a)} value {a['value']} <= {a['thresh']}"
                 for a in crossed) + f" → health capped at {cap}%",
-            "fail", 1.0))
+            "fail", 1.0, "threshold"))
 
     used = as_int(drive.get("percentage_used"))
     if used is not None:
@@ -362,7 +363,7 @@ def compute_health(drive: Dict[str, object]) -> HealthResult:
                 f"worn-out cells ({spare}% left, limit {floor}%). Replace it "
                 "soon.",
                 f"NVMe available spare {spare}% < threshold {floor}% → "
-                f"health capped at {cap}%", "fail", 1.0))
+                f"health capped at {cap}%", "fail", 1.0, "spare"))
 
     if not evidence:
         # Only a status flag (or nothing at all) could be read.
@@ -383,7 +384,7 @@ def compute_health(drive: Dict[str, object]) -> HealthResult:
             f"{lowest['value']}, threshold {lowest['thresh']})",
             "info" if vendor_pct >= 85
             else "warn" if vendor_pct >= _FAIL_BELOW * 100 else "fail",
-            1 - vendor))
+            1 - vendor, "vendor"))
     return HealthResult(pct, _ranked(reasons), method, vendor_pct)
 
 

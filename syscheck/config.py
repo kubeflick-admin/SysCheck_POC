@@ -49,14 +49,6 @@ CAMERA_BLUR_THRESHOLD = 90.0     # Laplacian variance below => "blurry"
 CAMERA_IMPROVE_DELTA = 15.0      # variance gain counted as a real improvement
 
 # ─────────────────────────────────────────────────────────────────────
-# Storage health scoring (heuristics for consumer laptops)
-# ─────────────────────────────────────────────────────────────────────
-POH_WARN_HOURS = 15000           # ~1.7 years powered on
-POH_FAIL_HOURS = 30000           # ~3.4 years powered on
-TBW_WARN_TB = 100.0              # host writes caution (typical SSD endurance)
-TBW_FAIL_TB = 250.0
-
-# ─────────────────────────────────────────────────────────────────────
 # Drive Health % (syscheck/diskhealth/health.py)
 # ─────────────────────────────────────────────────────────────────────
 # Health starts at 100%. Every health-relevant count takes a share away,

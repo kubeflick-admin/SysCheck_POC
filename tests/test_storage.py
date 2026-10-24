@@ -78,7 +78,7 @@ def test_smartctl_wins_and_matches_despite_windows_nvme_serial(sources):
     assert d["raw"]["disk_number"] == 0
     assert d["raw"]["windows_health"] == "OK"
     assert d["power_on_hours"] == 4321                  # not Layer B's 5200
-    assert d["health"] == d["health_flag"] == "OK"
+    assert d["health_flag"] == "OK"
     assert sources["wmi_calls"] == 0                    # never needed
 
 
@@ -146,7 +146,7 @@ def test_unreadable_drive_is_listed_with_windows_health(sources):
     assert result["smart_readable"] is False
     [d] = result["drives"]
     assert d["source"] == "none"
-    assert d["health"] == d["health_flag"] == "Warning"
+    assert d["health_flag"] == "Warning"
     assert d["model"] == "Samsung SSD 970 EVO Plus 500GB"
     assert d["power_on_hours"] is None
     assert d["host_writes_tb"] is None
@@ -177,7 +177,7 @@ def test_crashing_inventory_still_returns_smartctl_drives(sources,
     [d] = storage.collect_storage_health()["drives"]
 
     assert d["source"] == "smartctl"
-    assert d["health"] == "OK"
+    assert d["health_flag"] == "OK"
 
 
 def test_drive_only_smartctl_sees_is_still_listed(sources):
@@ -191,14 +191,16 @@ def test_drive_only_smartctl_sees_is_still_listed(sources):
     assert "windows_health" not in drives[1]["raw"]
 
 
-def test_current_score_still_reads_the_output(sources):
+def test_score_reads_the_collector_output(sources):
     sources["disks"] = [_disk(row=_counter_row())]
     sources["smartctl"] = [_smartctl_drive("nvme_healthy")]
 
     comp = score_storage(storage.collect_storage_health())
 
     assert comp.status == "pass"
-    assert any("4,321 power-on hours" in line for line in comp.details)
+    assert comp.score == 98.0                           # 2% of life used
+    assert comp.details[0].startswith("Samsung SSD 970 EVO Plus 500GB: "
+                                      "Health 98%. The SSD is in perfect")
 
 
 def test_unreadable_drive_keeps_the_administrator_cap(sources):

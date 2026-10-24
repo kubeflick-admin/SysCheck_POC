@@ -3,6 +3,7 @@ storage, and battery cards as each stage reports back."""
 
 from __future__ import annotations
 
+from html import escape
 from typing import Dict
 
 from PySide6.QtCore import Qt, Signal
@@ -10,10 +11,13 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QWidget)
 
 from ... import config
+from ...diskhealth.describe import (SOURCE_LABELS, assess, condition,
+                                    data_words, on_time_words, size_words,
+                                    temperature_words)
 from ...scoring import score_battery, score_storage
 from ...workers import TelemetryWorker
 from ..widgets import CircularProgress
-from ._common import label, light_state, panel
+from ._common import health_color, label, light_state, panel
 
 
 def _card(title: str) -> tuple:
@@ -158,14 +162,21 @@ class TelemetryView(QWidget):
             return "· no drive telemetry"
         out = ""
         for dr in drives:
-            poh = dr.get("power_on_hours")
-            tbw = dr.get("host_writes_tb")
-            out += self._row("DRIVE", f"{dr.get('model', '?')}")
-            out += self._row("", f"health: {dr.get('health', '?')}")
-            out += self._row("", f"on-hours: "
-                                f"{poh if poh is not None else 'n/a'}")
-            out += self._row("", f"written: "
-                                f"{f'{tbw:.1f} TB' if tbw is not None else 'n/a'}")
+            a = assess(dr)
+            pct = a.health.health_pct
+            health = (f"{pct}% {condition(pct)}" if pct is not None
+                      else "unknown")
+            out += self._row("DRIVE", escape(a.name))
+            out += self._row("", f"{dr.get('kind')} · "
+                                 f"{size_words(dr.get('size_gb'))}")
+            out += self._row("HEALTH", f"<span style='color:"
+                                       f"{health_color(pct)}'>{health}</span>")
+            out += self._row("TEMP", temperature_words(
+                dr.get("temperature_c"), dr.get("temperature_max_c")))
+            out += self._row("ON-TIME", on_time_words(dr.get("power_on_hours")))
+            out += self._row("WRITTEN", data_words(dr.get("host_writes_tb")))
+            out += self._row("SOURCE", SOURCE_LABELS.get(dr.get("source"),
+                                                         "?"))
         if not d.get("smart_readable", False):
             out += (f"<span style='color:{config.COL_AMBER}'>"
                     f"· run elevated for full S.M.A.R.T.</span>")

@@ -116,8 +116,31 @@ class ResultsView(QWidget):
         note.setWordWrap(True)
         lay.addWidget(note)
         for d in c.details:
-            lay.addWidget(label(f"· {d}", "dim"))
+            line = label(f"· {d}", "dim")
+            line.setWordWrap(True)
+            lay.addWidget(line)
+        if c.technical:
+            self._add_technical(lay, c.technical)
         return card
+
+    @staticmethod
+    def _add_technical(lay: QVBoxLayout, lines: List[str]) -> None:
+        """A collapsed "Technical details" section (attribute IDs etc.)."""
+        toggle = QPushButton("▸ TECHNICAL DETAILS")
+        toggle.setObjectName("ghost")
+        toggle.setCheckable(True)
+        body = label("\n".join(lines), "mono")
+        body.setTextFormat(Qt.PlainText)
+        body.setWordWrap(True)
+        body.setVisible(False)
+
+        def show(on: bool) -> None:
+            body.setVisible(on)
+            toggle.setText(("▾" if on else "▸") + " TECHNICAL DETAILS")
+
+        toggle.toggled.connect(show)
+        lay.addWidget(toggle, 0, Qt.AlignLeft)
+        lay.addWidget(body)
 
     # ── copy ──────────────────────────────────────────────────────────
     @staticmethod

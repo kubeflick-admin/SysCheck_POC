@@ -1,11 +1,26 @@
 """Scoring rules: per-component statuses and the overall grade."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from syscheck import config
 from syscheck.scoring import (ComponentScore, build_report, compute_overall,
                               score_battery, score_camera, score_keyboard,
-                              score_ports, score_thermal)
+                              score_ports, score_storage, score_thermal)
+from syscheck.telemetry.smart_sources import smartctl
+
+FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
+
+
+def _drive(name):
+    report = json.loads((FIXTURES / f"{name}.json").read_text("utf-8"))
+    return smartctl.parse_device(report)
+
+
+def _storage(*names):
+    return {"drives": [_drive(n) for n in names], "smart_readable": True}
 
 
 def _comp(key, score, status):
@@ -55,6 +70,47 @@ def test_ports_without_a_usb_device_do_not_cap_a_good_laptop():
     ports = next(c for c in report["components"] if c.key == "ports")
     assert ports.status == "inconclusive"
     assert report["overall"]["grade"] == "A"
+
+
+# ── storage ────────────────────────────────────────────────────────────
+def test_storage_scores_the_least_healthy_drive():
+    comp = score_storage(_storage("nvme_healthy", "sata_ssd_bad_sectors"))
+    assert comp.score == 78.0
+    assert comp.status == "warn"
+    # The worst finding across drives, named because there are two.
+    assert comp.note == ("Samsung SSD 860 EVO 500GB: The drive reported 4 "
+                         "read errors it could not fix.")
+
+
+def test_storage_note_for_a_healthy_drive_is_its_headline():
+    comp = score_storage(_storage("nvme_healthy"))
+    assert comp.status == "pass"
+    assert comp.note == "The SSD is in perfect condition. No problems found."
+
+
+def test_failing_drive_fails_storage():
+    comp = score_storage(_storage("nvme_worn"))
+    assert comp.score == 3.0
+    assert comp.status == "fail"
+
+
+def test_storage_jargon_stays_in_technical_details():
+    comp = score_storage(_storage("sata_ssd_bad_sectors"))
+    assert not any("ID " in line for line in comp.details)
+    assert any("Reallocated sectors (ID 5): 2" in line
+               for line in comp.technical)
+    assert any("Manufacturer-based health: 99%" in line
+               for line in comp.technical)
+    assert "Estimated remaining life: " in comp.details[-1]
+
+
+def test_unreadable_drive_is_named_in_the_details():
+    data = {"drives": [{"model": "Mystery SSD", "source": "none",
+                        "health_flag": "Unknown", "raw": {}}],
+            "smart_readable": False}
+    comp = score_storage(data)
+    assert comp.details == ["Mystery SSD: health could not be read."]
+    assert comp.score == 80.0                      # the Administrator cap
 
 
 # ── battery ────────────────────────────────────────────────────────────

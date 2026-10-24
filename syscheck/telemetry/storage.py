@@ -14,9 +14,8 @@ wherever the winning layer left it blank, and a drive no layer can read is
 still listed with ``source="none"`` and Windows' own health status, rather
 than failing the scan.
 
-Each drive is the normalised dict from ``smart_sources.schema`` plus
-``health`` (a copy of ``health_flag``), which the current score and
-telemetry card read.
+Each drive is the normalised dict from ``smart_sources.schema``;
+``syscheck.diskhealth`` turns it into a Health %.
 """
 
 from __future__ import annotations
@@ -121,7 +120,7 @@ def _wmi_smart_drive(disk: Dict[str, object],
 
 def _finish(drive: Dict[str, object],
             disk: Optional[Dict[str, object]]) -> Dict[str, object]:
-    """Fill identity gaps from the inventory and add the legacy key."""
+    """Fill identity gaps from the inventory."""
     if disk is not None:
         for field in ("model", "serial", "size_gb"):
             if drive[field] is None:
@@ -137,7 +136,6 @@ def _finish(drive: Dict[str, object],
         if (disk["serial"] and normalise_serial(disk["serial"])
                 != normalise_serial(drive["serial"])):
             raw["windows_serial"] = disk["serial"]
-    drive["health"] = drive["health_flag"]
     return drive
 
 

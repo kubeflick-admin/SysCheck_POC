@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from . import config
+from .diskhealth.describe import SOURCE_LABELS, assess
+from .diskhealth.health import SEVERITY_RANK
 
 # Statuses that carry no measurement and stay out of the weighted average.
 UNSCORED = ("skip", "inconclusive")
@@ -41,6 +43,8 @@ class ComponentScore:
     status: str              # pass | warn | fail | inconclusive | skip
     note: str = ""
     details: List[str] = field(default_factory=list)
+    # Jargon (attribute IDs, raw values) kept out of the plain summary.
+    technical: List[str] = field(default_factory=list)
 
 
 def _band_from_status(score: float) -> str:
@@ -55,54 +59,52 @@ def _band_from_status(score: float) -> str:
 # Subsystem scorers
 # ─────────────────────────────────────────────────────────────────────
 def score_storage(data: Dict[str, object]) -> ComponentScore:
+    """The worst drive's Health % (see :mod:`syscheck.diskhealth`)."""
     drives = data.get("drives", []) if data else []
     if not drives:
         return ComponentScore("storage", "Storage", 50, "skip",
                               "No drive telemetry available.")
 
-    worst = 100.0
-    notes: List[str] = []
+    several = len(drives) > 1
+    healths: List[int] = []
+    problems = []                # (reason, "Model: " prefix), not info
+    lowest = None                # assessment of the least healthy drive
     details: List[str] = []
-    for d in drives:
-        drive_score = 100.0
-        model = d.get("model", "Drive")
-        health = d.get("health", "Unknown")
-        if health == "FAILING":
-            drive_score = 0.0
-            notes.append(f"{model} reports imminent failure.")
-        elif health in ("Unhealthy",):
-            drive_score = min(drive_score, 20.0)
-            notes.append(f"{model} health is Unhealthy.")
-        elif health in ("Warning",):
-            drive_score = min(drive_score, 60.0)
+    technical: List[str] = []
+    for a in (assess(d) for d in drives):
+        pct = a.health.health_pct
+        prefix = f"{a.name}: " if several else ""
+        if pct is None:
+            details.append(f"{a.name}: health could not be read.")
+        else:
+            healths.append(pct)
+            details.append(f"{a.name}: Health {pct}%. {a.headline}")
+            details.extend(r.text for r in a.health.reasons[:3])
+            details.append(f"Estimated remaining life: {a.life.text}.")
+            if lowest is None or pct < lowest.health.health_pct:
+                lowest = a
+        technical.append(f"{a.name} — read by "
+                         f"{SOURCE_LABELS.get(a.drive.get('source'), '?')}")
+        technical.extend(f"  {line}" for line in a.health.technical())
+        problems.extend((r, prefix) for r in a.health.reasons
+                        if r.severity != "info")
 
-        poh = d.get("power_on_hours")
-        if poh is not None:
-            if poh >= config.POH_FAIL_HOURS:
-                drive_score = min(drive_score, 45.0)
-                notes.append(f"{model} has very high usage ({poh:,} h).")
-            elif poh >= config.POH_WARN_HOURS:
-                drive_score = min(drive_score, 70.0)
-            details.append(f"{model}: {poh:,} power-on hours")
-
-        tbw = d.get("host_writes_tb")
-        if tbw is not None:
-            if tbw >= config.TBW_FAIL_TB:
-                drive_score = min(drive_score, 45.0)
-                notes.append(f"{model} heavily written ({tbw:.0f} TB).")
-            elif tbw >= config.TBW_WARN_TB:
-                drive_score = min(drive_score, 70.0)
-            details.append(f"{model}: {tbw:.1f} TB written")
-
-        worst = min(worst, drive_score)
-
+    score = float(min(healths)) if healths else 100.0
+    worst = max(problems, default=None,
+                key=lambda p: (SEVERITY_RANK[p[0].severity], p[0].loss))
+    notes: List[str] = []
+    if worst is not None:
+        notes.append(worst[1] + worst[0].text)
+    elif lowest is not None:
+        notes.append((f"{lowest.name}: " if several else "")
+                     + lowest.headline)
     if not data.get("smart_readable", False):
         notes.append("Run as Administrator for full S.M.A.R.T. detail.")
-        worst = min(worst, 80.0)  # cap: we can't fully verify wear
+        score = min(score, 80.0)  # cap: we can't fully verify wear
 
     note = " ".join(notes) if notes else "Drive health looks good."
-    return ComponentScore("storage", "Storage", worst,
-                          _band_from_status(worst), note, details)
+    return ComponentScore("storage", "Storage", score,
+                          _band_from_status(score), note, details, technical)
 
 
 def score_battery(data: Dict[str, object]) -> ComponentScore:

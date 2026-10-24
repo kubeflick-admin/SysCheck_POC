@@ -1,14 +1,27 @@
 """View behaviour under an offscreen Qt platform (pytest-qt)."""
 
+import json
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from syscheck.diagnostics.keyboard import all_labels
+from syscheck.telemetry.smart_sources import smartctl
 from syscheck.ui.main_window import MainWindow
-from syscheck.ui.views import BatteryView, KeyboardView, ResultsView, ThermalView
+from syscheck.ui.views import (BatteryView, KeyboardView, ResultsView,
+                               TelemetryView, ThermalView)
+
+FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
+
+
+def _storage(*names):
+    drives = [smartctl.parse_device(json.loads(
+        (FIXTURES / f"{n}.json").read_text("utf-8"))) for n in names]
+    return {"drives": drives, "smart_readable": True}
 
 # Layout label -> (Qt key, native scan code) for keys that have no text.
 _SPECIAL_KEYS = {
@@ -119,3 +132,26 @@ def test_closing_the_window_stops_every_worker(qtbot, monkeypatch):
     window.close()
     assert sorted(stopped) == ["BatteryView", "CameraView", "PortsView",
                                "TelemetryView", "ThermalView"]
+
+
+def test_telemetry_card_shows_drive_health(qtbot):
+    view = TelemetryView()
+    qtbot.addWidget(view)
+    text = view._fmt_storage(_storage("nvme_healthy", "sata_ssd_bad_sectors"))
+    assert "98% EXCELLENT" in text
+    assert "78% FAIR" in text
+    assert "about 6 months switched on" in text
+
+
+def test_storage_technical_details_start_collapsed(qtbot):
+    view = ResultsView()
+    qtbot.addWidget(view)
+    view.set_results({"storage": _storage("sata_ssd_bad_sectors")})
+    toggle = next(b for b in view.findChildren(QPushButton)
+                  if "TECHNICAL DETAILS" in b.text())
+    body = next(lbl for lbl in view.findChildren(QLabel)
+                if "Reallocated sectors (ID 5)" in lbl.text())
+    assert body.isHidden()
+    toggle.click()
+    assert not body.isHidden()
+    assert toggle.text().startswith("▾")
