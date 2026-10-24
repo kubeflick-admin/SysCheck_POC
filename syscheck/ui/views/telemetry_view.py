@@ -74,7 +74,7 @@ class TelemetryView(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._btn = QPushButton("PROCEED TO BATTERY  ▶")
+        self._btn = QPushButton("PROCEED TO STORAGE  ▶")
         self._btn.setEnabled(False)
         self._btn.clicked.connect(self.next_requested.emit)
         btn_row.addWidget(self._btn)

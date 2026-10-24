@@ -129,6 +129,18 @@ def test_wmi_smart_used_when_nothing_else_reads_the_drive(sources):
     assert sources["wmi_calls"] == 1
 
 
+def test_inventory_fills_firmware_and_interface_the_layer_lacks(sources):
+    disk = _disk(pnp=SATA_PNP, kind="SATA SSD")
+    disk.update(firmware="RVT02B6Q", interface="SATA")
+    sources["disks"] = [disk]
+    sources["wmi"] = {SATA_PNP + "_0": _sata_entry()}
+
+    [d] = storage.collect_storage_health()["drives"]
+
+    assert d["raw"]["firmware"] == "RVT02B6Q"
+    assert d["raw"]["interface"] == "SATA"
+
+
 def test_single_drive_takes_the_only_smart_entry(sources):
     # Instance names that don't embed the PNP ID still work on a laptop
     # with one drive and one SMART entry.

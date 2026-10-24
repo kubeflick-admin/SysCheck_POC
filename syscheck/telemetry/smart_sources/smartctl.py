@@ -39,15 +39,23 @@ EXIT_NO_DATA = 0b11
 
 NVME_DATA_UNIT_BYTES = 512_000          # NVMe "data units" are 1000 x 512 B
 
-# Bytes per raw count of ATA attribute 241, keyed by smartctl's drive-
-# database name for it (None = one logical block). Other names mean the
-# vendor unit is unknown, and no figure is better than a wrong one.
+# Bytes per raw count of ATA attributes 241 (written) and 242 (read),
+# keyed by smartctl's drive-database name for them (None = one logical
+# block). Other names mean the vendor unit is unknown, and no figure is
+# better than a wrong one.
 HOST_WRITE_UNITS = {
     "Total_LBAs_Written": None,
     "Host_Writes_32MiB": 32 * 1024 ** 2,
     "Host_Writes_MiB": 1024 ** 2,
     "Host_Writes_GiB": 1024 ** 3,
     "Lifetime_Writes_GiB": 1024 ** 3,
+}
+HOST_READ_UNITS = {
+    "Total_LBAs_Read": None,
+    "Host_Reads_32MiB": 32 * 1024 ** 2,
+    "Host_Reads_MiB": 1024 ** 2,
+    "Host_Reads_GiB": 1024 ** 3,
+    "Lifetime_Reads_GiB": 1024 ** 3,
 }
 
 # SATA SSD life-left attributes whose normalised value counts down from 100.
@@ -176,12 +184,15 @@ def disk_number(device_name: object) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def ata_host_writes_tb(name: Optional[str], raw: Optional[int],
-                       block_size: Optional[int]) -> Optional[float]:
-    """Host writes in TB from attribute 241, or None if its unit is unknown."""
-    if raw is None or name not in HOST_WRITE_UNITS:
+def ata_host_tb(name: Optional[str], raw: Optional[int],
+                block_size: Optional[int],
+                units: Dict[str, Optional[int]] = HOST_WRITE_UNITS
+                ) -> Optional[float]:
+    """TB from attribute 241 (or 242 with ``HOST_READ_UNITS``), or None
+    if its unit is unknown."""
+    if raw is None or name not in units:
         return None
-    unit = HOST_WRITE_UNITS[name] or (block_size or 512)
+    unit = units[name] or (block_size or 512)
     return round(raw * unit / (1000 ** 4), 2)
 
 
@@ -331,6 +342,9 @@ def parse_device(report: object) -> Optional[Dict[str, object]]:
     if protocol == "NVMe":
         raw["interface"] = "NVMe"
         raw["nvme_critical_warning"] = nvme.get("critical_warning")
+        # The whole health log, for the report's attribute table.
+        raw["nvme_log"] = {k: v for k, v in nvme.items()
+                           if isinstance(v, int) and not isinstance(v, bool)}
         raw["host_reads_tb"] = _nvme_tb(nvme.get("data_units_read"))
         drive["host_writes_tb"] = _nvme_tb(nvme.get("data_units_written"))
         for field, key in (("power_on_hours", "power_on_hours"),
@@ -362,11 +376,15 @@ def parse_device(report: object) -> Optional[Dict[str, object]]:
         drive["error_log_entries"] = as_int(
             ((report.get("ata_smart_error_log") or {}).get("summary") or {})
             .get("count"))
+        block = as_int(report.get("logical_block_size"))
         writes = _by_id(attrs, 241)
         if writes:
-            drive["host_writes_tb"] = ata_host_writes_tb(
-                writes["name"], writes["raw"],
-                as_int(report.get("logical_block_size")))
+            drive["host_writes_tb"] = ata_host_tb(writes["name"],
+                                                  writes["raw"], block)
+        reads = _by_id(attrs, 242)
+        if reads:
+            raw["host_reads_tb"] = ata_host_tb(reads["name"], reads["raw"],
+                                               block, HOST_READ_UNITS)
         if kind == KIND_SATA_SSD:
             used = [100 - a["value"] for a in attrs
                     if a["name"] in LIFE_LEFT_NAMES

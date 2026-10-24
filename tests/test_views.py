@@ -7,13 +7,14 @@ import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget
 
 from syscheck.diagnostics.keyboard import all_labels
 from syscheck.telemetry.smart_sources import smartctl
 from syscheck.ui.main_window import MainWindow
 from syscheck.ui.views import (BatteryView, KeyboardView, ResultsView,
-                               TelemetryView, ThermalView)
+                               StorageView, TelemetryView, ThermalView)
+from syscheck.ui.widgets import HealthBar
 
 FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
 
@@ -155,3 +156,69 @@ def test_storage_technical_details_start_collapsed(qtbot):
     toggle.click()
     assert not body.isHidden()
     assert toggle.text().startswith("▾")
+
+
+# ── storage page ───────────────────────────────────────────────────────
+def _tabs(view):
+    return [b for b in view.findChildren(QPushButton)
+            if b.objectName() == "tab"]
+
+
+def test_storage_page_has_a_page_and_tab_per_drive(qtbot):
+    view = StorageView()
+    qtbot.addWidget(view)
+    view.set_storage(_storage("nvme_healthy", "sata_ssd_bad_sectors"))
+
+    assert view._pages.count() == 2
+    assert not view._tabs_host.isHidden()
+    tabs = _tabs(view)
+    assert [t.text() for t in tabs] == [
+        "NVMe SSD  ·  500 GB  ·  98%",
+        "DISK 0  ·  SATA SSD  ·  500 GB  ·  78%"]      # /dev/sda
+    assert tabs[0].isChecked()
+
+    tabs[1].click()
+    page = view._pages.currentWidget()
+    assert page.findChild(HealthBar).value() == 78
+    table = page.findChild(QTableWidget)
+    assert table.rowCount() == 11
+    assert table.item(0, 6).text() == "Warning"           # ID 5
+    texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+    assert "S3Z2NB0K123456X" in texts                     # serial shown
+    assert "FAIR" in texts
+
+
+def test_storage_page_for_one_drive_hides_the_selector(qtbot):
+    view = StorageView()
+    qtbot.addWidget(view)
+    view.set_storage(_storage("nvme_healthy", "nvme_worn"))
+    view.set_storage(_storage("nvme_healthy"))           # rebuilt, not added
+    assert view._pages.count() == 1
+    assert view._tabs_host.isHidden()
+    assert len(view._group.buttons()) == 1
+
+
+def test_storage_page_without_drives_says_so(qtbot):
+    view = StorageView()
+    qtbot.addWidget(view)
+    view.set_storage({"drives": [], "smart_readable": False})
+    texts = [lbl.text() for lbl in view.findChildren(QLabel)]
+    assert "NO DRIVES LISTED" in texts
+
+
+def test_flow_visits_storage_between_telemetry_and_battery(qtbot,
+                                                           monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window._battery, "start", lambda: None)
+    window._results = {"storage": _storage("nvme_healthy")}
+
+    window._telemetry.next_requested.emit()
+    assert window._stack.currentWidget() is window._storage
+    assert window._header._title.text() == "STORAGE"
+    assert window._storage._pages.currentWidget().findChild(
+        HealthBar).value() == 98
+
+    window._storage._btn.click()
+    assert window._stack.currentWidget() is window._battery
+    assert window._header._title.text() == "BATTERY"

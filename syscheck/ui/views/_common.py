@@ -61,19 +61,20 @@ class StepHeader(QWidget):
         super().__init__(parent)
         self._steps = steps
         self._current = 0
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Preferred height so a wrapped crumb line gets its room.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self._index = label("", "h2")
         self._title = label("", "h1")
         self._crumbs = label("", "dim")
+        self._crumbs.setWordWrap(True)      # wraps between steps if narrow
         col = QVBoxLayout()
         col.setSpacing(2)
         col.addWidget(self._title)
         col.addWidget(self._crumbs)
-        root.addLayout(col)
-        root.addStretch(1)
+        root.addLayout(col, 1)
         root.addWidget(self._index, 0, Qt.AlignTop)
         self.set_step(0)
 
@@ -83,7 +84,7 @@ class StepHeader(QWidget):
         self._index.setText(f">> {self._current + 1:02d} / {total:02d}")
         self._title.setText(self._steps[self._current].upper())
         crumbs = "   ".join(
-            (f"● {s}" if i == self._current else f"○ {s}")
+            (f"●\u00a0{s}" if i == self._current else f"○\u00a0{s}")
             for i, s in enumerate(self._steps)
         )
         self._crumbs.setText(crumbs)

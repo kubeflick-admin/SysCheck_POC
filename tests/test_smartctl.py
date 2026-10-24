@@ -354,11 +354,28 @@ def test_missing_fields_are_none_not_zero():
     ("Total_LBAs_Written", None, 512, None),
 ])
 def test_ata_host_writes_units(name, raw, block, expected):
-    result = smartctl.ata_host_writes_tb(name, raw, block)
+    result = smartctl.ata_host_tb(name, raw, block)
     if expected is None:
         assert result is None
     else:
         assert result == pytest.approx(expected, abs=0.01)
+
+
+def test_ata_host_reads_use_their_own_names():
+    tb = smartctl.ata_host_tb("Total_LBAs_Read", 2 * 10 ** 9, 512,
+                              smartctl.HOST_READ_UNITS)
+    assert tb == pytest.approx(1.02, abs=0.01)
+    assert smartctl.ata_host_tb("Total_LBAs_Written", 2 * 10 ** 9, 512,
+                                smartctl.HOST_READ_UNITS) is None
+    d = smartctl.parse_device(_load("hdd_crc_only"))
+    assert d["raw"]["host_reads_tb"] == pytest.approx(12.01, abs=0.01)
+
+
+def test_nvme_health_log_is_kept_for_the_report():
+    log = smartctl.parse_device(_load("nvme_healthy"))["raw"]["nvme_log"]
+    assert log["data_units_written"] == 23456789
+    assert log["num_err_log_entries"] == 12
+    assert "temperature_sensors" not in log           # lists are dropped
 
 
 def test_unknown_241_unit_leaves_host_writes_unknown():

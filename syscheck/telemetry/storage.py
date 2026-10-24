@@ -45,8 +45,9 @@ def _safe(fn: Callable, default: object, log: LogFn) -> object:
 
 
 def _inventory(log: LogFn) -> List[Dict[str, object]]:
-    """Physical drives with identity, kind, Windows health and the
-    MSFT_PhysicalDisk row (reliability counters included) for each."""
+    """Physical drives with identity, kind, firmware, interface, Windows
+    health and the MSFT_PhysicalDisk row (reliability counters included)
+    for each."""
     rows: Dict[int, Dict[str, object]] = {}
     for row in reliability.fetch(log):
         number = as_int(row.get("DeviceId"))
@@ -64,6 +65,8 @@ def _inventory(log: LogFn) -> List[Dict[str, object]]:
                         "serial": (d.SerialNumber or "").strip() or None,
                         "size_gb": size_gb(d.Size),
                         "pnp": wmi_smart.instance_key(d.PNPDeviceID) or None,
+                        "firmware": (getattr(d, "FirmwareRevision", None)
+                                     or "").strip() or None,
                     })
             except Exception as exc:  # noqa: BLE001
                 log(f"[WARN] Win32_DiskDrive failed: {exc}")
@@ -71,13 +74,15 @@ def _inventory(log: LogFn) -> List[Dict[str, object]]:
     listed = {d["disk_number"] for d in disks}
     for number in sorted(rows.keys() - listed):
         disks.append({"disk_number": number, "model": "Unknown drive",
-                      "serial": None, "size_gb": None, "pnp": None})
+                      "serial": None, "size_gb": None, "pnp": None,
+                      "firmware": None})
 
     for d in disks:
         row = rows.get(d["disk_number"])
         d["row"] = row
         d["kind"] = KIND_UNKNOWN
         d["windows_health"] = FLAG_UNKNOWN
+        d["interface"] = None
         if row:
             # MSFT_PhysicalDisk reports the exact size; Win32_DiskDrive
             # rounds it down to whole cylinders.
@@ -87,6 +92,10 @@ def _inventory(log: LogFn) -> List[Dict[str, object]]:
                                             row.get("BusType"))
             d["windows_health"] = reliability.health_flag(
                 row.get("HealthStatus"))
+            d["interface"] = reliability.BUS_NAMES.get(
+                as_int(row.get("BusType")))
+            d["firmware"] = (str(row.get("FirmwareVersion") or "").strip()
+                             or d["firmware"])
     disks.sort(key=lambda d: (d["disk_number"] is None, d["disk_number"]))
     return disks
 
@@ -130,8 +139,9 @@ def _finish(drive: Dict[str, object],
         if drive["health_flag"] == FLAG_UNKNOWN:
             drive["health_flag"] = disk["windows_health"]
         raw = drive["raw"]
-        if raw.get("disk_number") is None:
-            raw["disk_number"] = disk["disk_number"]
+        for key in ("disk_number", "firmware", "interface"):
+            if raw.get(key) is None:
+                raw[key] = disk.get(key)
         raw["windows_health"] = disk["windows_health"]
         if (disk["serial"] and normalise_serial(disk["serial"])
                 != normalise_serial(drive["serial"])):

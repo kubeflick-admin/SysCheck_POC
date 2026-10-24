@@ -12,12 +12,12 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
 
 from .. import config
 from .widgets import TelemetryConsole, IndicatorLight
-from .views import (SplashView, TelemetryView, BatteryView, ThermalView,
-                    CameraView, KeyboardView, TouchpadView, PortsView,
-                    ResultsView)
+from .views import (SplashView, TelemetryView, StorageView, BatteryView,
+                    ThermalView, CameraView, KeyboardView, TouchpadView,
+                    PortsView, ResultsView)
 from .views._common import StepHeader, panel, label
 
-_STEPS = ["Telemetry", "Battery", "Thermal", "Webcam", "Keyboard",
+_STEPS = ["Telemetry", "Storage", "Battery", "Thermal", "Webcam", "Keyboard",
           "Touchpad", "Ports", "Verdict"]
 
 
@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         # ── Views ────────────────────────────────────────────────────
         self._splash = SplashView()
         self._telemetry = TelemetryView()
+        self._storage = StorageView()
         self._battery = BatteryView()
         self._thermal = ThermalView()
         self._camera = CameraView()
@@ -58,9 +59,9 @@ class MainWindow(QMainWindow):
         self._touchpad = TouchpadView()
         self._ports = PortsView()
         self._results_view = ResultsView()
-        for v in (self._splash, self._telemetry, self._battery, self._thermal,
-                  self._camera, self._keyboard, self._touchpad, self._ports,
-                  self._results_view):
+        for v in (self._splash, self._telemetry, self._storage, self._battery,
+                  self._thermal, self._camera, self._keyboard, self._touchpad,
+                  self._ports, self._results_view):
             self._stack.addWidget(v)
 
         self._wire()
@@ -115,32 +116,33 @@ class MainWindow(QMainWindow):
             lambda d: self._results.update({"specs": d.get("specs"),
                                             "storage": d.get("storage"),
                                             "battery": d.get("battery")}))
-        self._telemetry.next_requested.connect(self._enter_battery)
+        self._telemetry.next_requested.connect(self._enter_storage)
+        self._storage.next_requested.connect(self._enter_battery)
 
         # The discharge test augments the wear data gathered in telemetry.
         self._battery.finished.connect(self._merge_battery)
         self._battery.next_requested.connect(
-            lambda: self._advance(self._thermal, 2))
+            lambda: self._advance(self._thermal, 3))
 
         self._thermal.finished.connect(
             lambda d: self._results.__setitem__("thermal", d))
         self._thermal.next_requested.connect(
-            lambda: self._advance(self._camera, 3))
+            lambda: self._advance(self._camera, 4))
 
         self._camera.finished.connect(
             lambda d: self._results.__setitem__("camera", d))
         self._camera.next_requested.connect(
-            lambda: self._advance(self._keyboard, 4))
+            lambda: self._advance(self._keyboard, 5))
 
         self._keyboard.finished.connect(
             lambda d: self._results.__setitem__("keyboard", d))
         self._keyboard.next_requested.connect(
-            lambda: self._advance(self._touchpad, 5))
+            lambda: self._advance(self._touchpad, 6))
 
         self._touchpad.finished.connect(
             lambda d: self._results.__setitem__("touchpad", d))
         self._touchpad.next_requested.connect(
-            lambda: self._advance(self._ports, 6))
+            lambda: self._advance(self._ports, 7))
 
         self._ports.finished.connect(
             lambda d: self._results.__setitem__("ports", d))
@@ -148,11 +150,15 @@ class MainWindow(QMainWindow):
 
         self._results_view.restart_requested.connect(self._reset_flow)
 
+    def _enter_storage(self) -> None:
+        self._storage.set_storage(self._results.get("storage"))
+        self._advance(self._storage, 1)
+
     def _enter_battery(self) -> None:
         # Hand the telemetry battery data to the discharge step: full-charge
         # energy converts a 1%-drop time into watts, and wear feeds its light.
         self._battery.set_battery(self._results.get("battery"))
-        self._advance(self._battery, 1)
+        self._advance(self._battery, 2)
 
     def _merge_battery(self, discharge: dict) -> None:
         batt = self._results.get("battery")

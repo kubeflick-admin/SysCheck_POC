@@ -3,6 +3,7 @@ its worker (where applicable) and emits navigation signals."""
 
 from .splash_view import SplashView
 from .telemetry_view import TelemetryView
+from .storage_view import StorageView
 from .battery_view import BatteryView
 from .thermal_view import ThermalView
 from .camera_view import CameraView
@@ -14,6 +15,7 @@ from .results_view import ResultsView
 __all__ = [
     "SplashView",
     "TelemetryView",
+    "StorageView",
     "BatteryView",
     "ThermalView",
     "CameraView",
