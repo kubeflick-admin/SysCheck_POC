@@ -1,0 +1,38 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 5],
+    "svn_revision": "5714",
+    "platform_info": "x86_64-w64-mingw32-w11-b26100",
+    "build_info": "(AppVeyor)",
+    "argv": ["smartctl", "-a", "-j", "-d", "nvme", "/dev/nvme0"],
+    "messages": [{"string": "SMART overall-health self-assessment test result: FAILED!", "severity": "error"}],
+    "exit_status": 72
+  },
+  "device": {"name": "/dev/nvme0", "info_name": "/dev/nvme0", "type": "nvme", "protocol": "NVMe"},
+  "model_name": "WDC PC SN530 SDBPNPZ-256G-1006",
+  "serial_number": "2049XX123456",
+  "firmware_version": "21106000",
+  "user_capacity": {"blocks": 500118192, "bytes": 256060514304},
+  "logical_block_size": 512,
+  "smart_status": {"passed": false, "nvme": {"value": 1}},
+  "nvme_smart_health_information_log": {
+    "critical_warning": 1,
+    "temperature": 52,
+    "available_spare": 4,
+    "available_spare_threshold": 10,
+    "percentage_used": 97,
+    "data_units_read": 310000000,
+    "data_units_written": 290000000,
+    "power_cycles": 3100,
+    "power_on_hours": 21000,
+    "unsafe_shutdowns": 410,
+    "media_errors": 3,
+    "num_err_log_entries": 2050,
+    "warning_temp_time": 14,
+    "critical_comp_time": 0
+  },
+  "temperature": {"current": 52},
+  "power_cycle_count": 3100,
+  "power_on_time": {"hours": 21000}
+}

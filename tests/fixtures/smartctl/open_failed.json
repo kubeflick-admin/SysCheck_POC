@@ -1,0 +1,12 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 5],
+    "svn_revision": "5714",
+    "platform_info": "x86_64-w64-mingw32-w11-b26100",
+    "build_info": "(AppVeyor)",
+    "argv": ["smartctl", "-a", "-j", "/dev/sdc"],
+    "messages": [{"string": "Smartctl open device: /dev/sdc failed: Access is denied", "severity": "error"}],
+    "exit_status": 2
+  }
+}
