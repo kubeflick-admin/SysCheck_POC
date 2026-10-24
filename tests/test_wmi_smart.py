@@ -1,5 +1,7 @@
 """Layer C: hand-built ATA S.M.A.R.T. attribute and threshold blobs."""
 
+import pytest
+
 from syscheck.telemetry.smart_sources import wmi_smart
 
 
@@ -156,3 +158,23 @@ def test_temperature_falls_back_to_airflow_attribute():
 
 def test_fetch_off_windows_returns_nothing():
     assert wmi_smart.fetch(lambda _: None) == {}
+
+
+# ── power-on time units ────────────────────────────────────────────────
+@pytest.mark.parametrize("raw, expected", [
+    (15_000, (15_000, "hours")),
+    (10_000 * 60, (10_000, "minutes")),          # Maxtor-style minutes
+    (100_000 * 120, (100_000, "half-minutes")),  # minutes would be 22 years
+    (2 ** 32 - 1, (None, None)),                 # nothing plausible
+    (None, (None, None)),
+])
+def test_power_on_unit_is_sanity_checked(raw, expected):
+    assert wmi_smart.power_on_hours(raw) == expected
+
+
+def test_power_on_in_minutes_is_marked_estimated():
+    d = wmi_smart.to_drive({9: {"flags": 0, "value": 90, "worst": 90,
+                                "raw": 600_000}}, {}, False)
+    assert d["power_on_hours"] == 10_000
+    assert d["raw"]["power_on_unit"] == "minutes"
+    assert d["raw"]["power_on_estimated"] is True

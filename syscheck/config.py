@@ -57,6 +57,68 @@ TBW_WARN_TB = 100.0              # host writes caution (typical SSD endurance)
 TBW_FAIL_TB = 250.0
 
 # ─────────────────────────────────────────────────────────────────────
+# Drive Health % (syscheck/diskhealth/health.py)
+# ─────────────────────────────────────────────────────────────────────
+# Health starts at 100%. Every health-relevant count takes a share away,
+# loss = min(weight * count, max_loss), and the shares multiply: two
+# different problems hurt more than one of the same size, and no single
+# attribute can push health below 1 - max_loss. Our own starting numbers.
+#   ATA attribute id: (loss per count, max loss, drives it applies to)
+#   "all" = HDD and SSD; "hdd" = hard drives (and drives of unknown kind)
+HEALTH_PENALTIES = {
+    5: (0.01, 0.70, "all"),      # reallocated sectors
+    196: (0.005, 0.50, "hdd"),   # reallocation events
+    197: (0.02, 0.70, "all"),    # current pending sectors
+    198: (0.03, 0.70, "all"),    # offline uncorrectable sectors
+    187: (0.03, 0.60, "all"),    # reported uncorrectable errors
+    188: (0.001, 0.20, "hdd"),   # command timeouts
+    10: (0.05, 0.50, "hdd"),     # spin retries
+    189: (0.001, 0.20, "hdd"),   # high fly writes
+    184: (0.05, 0.50, "all"),    # end-to-end (internal data path) errors
+}
+# ATA 199 (UDMA CRC errors) costs nothing: it points at the cable or
+# connector, not the drive, so it is reported as advice only.
+HEALTH_NVME_MEDIA_PENALTY = (0.03, 0.70)        # NVMe media / integrity errors
+# Windows' uncorrected read + write errors (reliability counters, which
+# have no attribute table) count like reported uncorrectable errors.
+HEALTH_WINDOWS_UNCORRECTED_PENALTY = (0.03, 0.60)
+
+# Caps applied after the penalties: health is at most this many percent.
+HEALTH_CAP_FAILING_PCT = 10      # drive or Windows says failing / NVMe critical warning
+HEALTH_CAP_THRESHOLD_PCT = 10    # a normalised value at or below its threshold
+HEALTH_CAP_SPARE_PCT = 20        # NVMe available spare below its threshold
+HEALTH_CAP_WARNING_PCT = 60      # Windows HealthStatus "Warning"
+# Temperature attributes crossing their threshold mean "hot right now",
+# not damage, so they don't trigger the threshold cap.
+HEALTH_THRESHOLD_IGNORE_IDS = (190, 194)
+SSD_WEAR_WARN_PCT = 80           # rated life used before wear becomes a warning
+
+# Condition word shown next to a Health % (first band it reaches). The
+# bar colour follows the score bands: green >= 85, amber >= 60, else red.
+HEALTH_WORDS = [
+    (95, "EXCELLENT"),
+    (85, "GOOD"),
+    (60, "FAIR"),
+    (30, "POOR"),
+    (0, "CRITICAL"),
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# Estimated remaining drive life
+# ─────────────────────────────────────────────────────────────────────
+# Powered-on hours a healthy drive is expected to last (5 and 6 years).
+EXPECTED_LIFE_HOURS = {"HDD": 43_800, "SSD": 52_560}
+LIFE_CAP_DAYS = 1000             # estimates are capped and shown as "more than"
+LIFE_HOURS_PER_DAY = 8           # assumed use when converting to calendar time
+# A drive that has run this hot (now or lifetime max) loses a share of
+# its expected life.
+LIFE_HOT_C = {"HDD": 55, "SSD": 75}
+LIFE_HEAT_PENALTY_FRAC = 0.10
+# Raw power-on values implying more than ~15 years are re-read as minutes
+# or half-minutes (Layer C only; smartctl knows each drive's unit).
+POWER_ON_MAX_PLAUSIBLE_HOURS = 131_400
+
+# ─────────────────────────────────────────────────────────────────────
 # Storage data collection (smartctl / Windows S.M.A.R.T. sources)
 # ─────────────────────────────────────────────────────────────────────
 SMARTCTL_TIMEOUT_S = 10          # per call, so a hung drive can't stall the scan

@@ -11,13 +11,16 @@ raw (6, LE), reserved. Threshold record: id, threshold, reserved (10).
 This is the last resort for older SATA drives and has no drive database,
 so only attributes with a standard meaning are mapped. Host writes (241)
 stay in the attribute table but are never converted, because their unit
-differs by vendor. Power-on hours assume the usual hours unit.
+differs by vendor. Power-on hours assume the usual hours unit unless that
+implies an implausible age, then minutes or half-minutes (some Fujitsu,
+Maxtor and old Samsung drives) are tried and the result marked estimated.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
+from ... import config
 from ..wmi_util import wmi_connection
 from .schema import (FLAG_FAILING, FLAG_OK, FLAG_UNKNOWN, SOURCE_WMI_SMART,
                      new_drive)
@@ -81,6 +84,27 @@ def parse_threshold_blob(blob: bytes) -> Dict[int, int]:
     return thresholds
 
 
+# Attribute 9's raw unit, tried in order until the age is plausible.
+POWER_ON_UNITS = (("hours", 1), ("minutes", 60), ("half-minutes", 120))
+
+
+def power_on_hours(raw: Optional[int]) -> Tuple[Optional[int], Optional[str]]:
+    """(hours, unit) from attribute 9's raw value.
+
+    Hours is the usual unit; a value implying more than
+    ``config.POWER_ON_MAX_PLAUSIBLE_HOURS`` is re-read as minutes, then
+    half-minutes. Nothing plausible gives (None, None).
+    """
+    if raw is None:
+        return None, None
+    # Some vendors pack minutes/ms above bit 32 of the hours counter.
+    value = raw & 0xFFFFFFFF
+    for unit, per_hour in POWER_ON_UNITS:
+        if value // per_hour <= config.POWER_ON_MAX_PLAUSIBLE_HOURS:
+            return value // per_hour, unit
+    return None, None
+
+
 def _temperatures(raw: Optional[int]) -> tuple:
     """(current, lifetime max) from a 194/190 raw value.
 
@@ -137,7 +161,7 @@ def to_drive(attrs: Dict[int, Dict[str, Optional[int]]],
     temp, temp_max = _temperatures(raw(194))
     if temp is None:
         temp, temp_max = _temperatures(raw(190))
-    poh = raw(9)
+    poh, poh_unit = power_on_hours(raw(9))
     timeouts = raw(188)
     uncorrectable = raw(198)
 
@@ -145,8 +169,7 @@ def to_drive(attrs: Dict[int, Dict[str, Optional[int]]],
         source=SOURCE_WMI_SMART,
         health_flag={True: FLAG_FAILING, False: FLAG_OK}.get(
             predict_failure, FLAG_UNKNOWN),
-        # Some vendors pack minutes/ms above bit 32 of the hours counter.
-        power_on_hours=poh & 0xFFFFFFFF if poh is not None else None,
+        power_on_hours=poh,
         power_cycles=raw(12),
         temperature_c=temp,
         temperature_max_c=temp_max,
@@ -159,7 +182,9 @@ def to_drive(attrs: Dict[int, Dict[str, Optional[int]]],
     )
     drive["raw"] = {
         "attributes": _table(attrs, thresholds),
-        "power_on_hours_raw": poh,
+        "power_on_hours_raw": raw(9),
+        "power_on_unit": poh_unit,
+        "power_on_estimated": poh_unit not in (None, "hours"),
         # Some vendors pack three 16-bit counters into 188.
         "command_timeouts": timeouts & 0xFFFF if timeouts is not None
         else None,
