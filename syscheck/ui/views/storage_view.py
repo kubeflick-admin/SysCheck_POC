@@ -11,7 +11,7 @@ touches the hardware.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -21,14 +21,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QGridLayout,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ... import config
-from ...diskhealth.describe import (SOURCE_LABELS, DriveAssessment, SmartRow,
-                                    assess, condition, detail_rows,
-                                    no_table_reason, size_words, smart_rows)
+from ...diskhealth.describe import (ATA_COLUMNS, SOURCE_LABELS,
+                                    DriveAssessment, SmartRow, assess,
+                                    condition, detail_rows, no_table_reason,
+                                    size_words, smart_columns, smart_rows,
+                                    unsafe_shutdowns_note)
 from ..widgets import HealthBar
 from ._common import health_color, hline, label, panel
 
-SMART_COLUMNS = ("ID", "ATTRIBUTE", "VALUE", "WORST", "THRESH", "RAW",
-                 "STATUS")
 SEVERITY_COLOR = {"ok": config.COL_GREEN, "info": config.COL_BLUE,
                   "warn": config.COL_AMBER, "fail": config.COL_RED}
 _ROW_HEIGHT = 24
@@ -215,6 +215,11 @@ class StorageView(QWidget):
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
         lay.addLayout(grid)
+        note = unsafe_shutdowns_note(a.drive)
+        if note:
+            hint = label(note, "dim")
+            hint.setWordWrap(True)
+            lay.addWidget(hint)
         return card
 
     def _smart(self, a: DriveAssessment) -> QWidget:
@@ -229,7 +234,7 @@ class StorageView(QWidget):
 
         rows = smart_rows(a.drive)
         if rows:
-            lay.addWidget(self._smart_table(rows))
+            lay.addWidget(self._smart_table(smart_columns(a.drive), rows))
         else:
             msg = label(no_table_reason(a.drive), "dim")
             msg.setWordWrap(True)
@@ -243,10 +248,11 @@ class StorageView(QWidget):
         return card
 
     @staticmethod
-    def _smart_table(rows: List[SmartRow]) -> QTableWidget:
-        table = QTableWidget(len(rows), len(SMART_COLUMNS))
+    def _smart_table(columns: Tuple[str, ...],
+                     rows: List[SmartRow]) -> QTableWidget:
+        table = QTableWidget(len(rows), len(columns))
         table.setObjectName("smart")
-        table.setHorizontalHeaderLabels(SMART_COLUMNS)
+        table.setHorizontalHeaderLabels(columns)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -256,22 +262,25 @@ class StorageView(QWidget):
         table.setShowGrid(False)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
+        ata = columns == ATA_COLUMNS
+        name_col = columns.index("ATTRIBUTE" if ata else "NAME")
+        status_col = columns.index("STATUS")
+        centred = [columns.index(c) for c in ("ID", "VALUE", "WORST",
+                                              "THRESH")] if ata else []
         for r, row in enumerate(rows):
-            cells = (row.id, row.name, row.value, row.worst, row.thresh,
-                     row.raw, row.status)
-            for c, text in enumerate(cells):
+            for c, text in enumerate(row.cells(columns)):
                 item = QTableWidgetItem(text)
-                if c in (0, 2, 3, 4):
+                if c in centred:
                     item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(r, c, item)
             color = QColor(SEVERITY_COLOR[row.severity])
-            table.item(r, 6).setForeground(color)
+            table.item(r, status_col).setForeground(color)
             if row.severity in ("warn", "fail"):
-                table.item(r, 1).setForeground(color)
+                table.item(r, name_col).setForeground(color)
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(name_col, QHeaderView.Stretch)
         header.setHighlightSections(False)
         # The page scrolls, not the table: show every row.
         table.setFixedHeight(header.sizeHint().height()

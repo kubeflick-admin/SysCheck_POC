@@ -85,6 +85,42 @@ def test_report_has_each_drive_with_its_smart_table():
     assert "S3Z2NB0K123456X" in html and "S4EVNX0N123456A" in html
 
 
+def test_nvme_table_has_name_value_status_only():
+    html = _render(_results("nvme_healthy"))
+    assert ("<thead><tr><th>NAME</th><th>VALUE</th><th>STATUS</th></tr>"
+            "</thead>") in html
+    assert "<th>WORST</th>" not in html
+    assert ("<tr><td>Critical warning</td><td>0x00</td>"
+            "<td class='pass'>OK</td></tr>") in html
+
+
+def test_ata_table_keeps_every_column():
+    html = _render(_results("sata_ssd_bad_sectors"))
+    assert ("<th>ID</th><th>ATTRIBUTE</th><th>VALUE</th><th>WORST</th>"
+            "<th>THRESH</th><th>RAW</th><th>STATUS</th>") in html
+
+
+def test_healthy_drive_headline_appears_once_per_section():
+    html = _render(_results("nvme_healthy"))
+    assert html.count("The SSD is in perfect condition.") == 2  # card + drive
+
+
+def test_report_explains_temperature_and_unsafe_shutdowns():
+    html = _render(_results("nvme_healthy"))
+    assert "38 °C now · max not reported" in html
+    assert "Unsafe shutdowns are times the drive lost power" in html
+
+
+@pytest.mark.parametrize("admin, shown", [
+    (False, True), (True, False), (None, False),
+])
+def test_report_banner_when_not_administrator(admin, shown):
+    html = _render(_results("nvme_healthy"), admin=admin)
+    banner = ('<section class="panel banner">Run as Administrator for '
+              "temperatures and full drive details.</section>")
+    assert (banner in html) is shown
+
+
 def test_serial_numbers_can_be_hidden():
     drives = ("nvme_healthy", "sata_ssd_bad_sectors")
     html = _render(_results(*drives), hide_serials=True)

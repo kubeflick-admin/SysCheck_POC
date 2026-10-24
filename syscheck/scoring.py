@@ -70,38 +70,43 @@ def score_storage(data: Dict[str, object]) -> ComponentScore:
                               "No drive telemetry available.")
 
     several = len(drives) > 1
-    healths: List[int] = []
-    problems = []                # (reason, "Model: " prefix), not info
-    lowest = None                # assessment of the least healthy drive
-    details: List[str] = []
-    technical: List[str] = []
-    for a in (assess(d) for d in drives):
-        pct = a.health.health_pct
-        prefix = f"{a.name}: " if several else ""
-        if pct is None:
-            details.append(f"{a.name}: health could not be read.")
-        else:
-            healths.append(pct)
-            details.append(f"{a.name}: Health {pct}%. {a.headline}")
-            details.extend(r.text for r in a.health.reasons[:3])
-            details.append(f"Estimated remaining life: {a.life.text}.")
-            if lowest is None or pct < lowest.health.health_pct:
-                lowest = a
-        technical.append(f"{a.name} — read by "
-                         f"{SOURCE_LABELS.get(a.drive.get('source'), '?')}")
-        technical.extend(f"  {line}" for line in a.health.technical())
-        problems.extend((r, prefix) for r in a.health.reasons
-                        if r.severity != "info")
-
-    score = float(min(healths)) if healths else 100.0
+    assessed = [assess(d) for d in drives]
+    readable = [a for a in assessed if a.health.health_pct is not None]
+    # The least healthy drive, and the worst finding across drives.
+    lowest = min(readable, default=None, key=lambda a: a.health.health_pct)
+    problems = [(r, a) for a in assessed for r in a.health.reasons
+                if r.severity != "info"]
     worst = max(problems, default=None,
                 key=lambda p: (SEVERITY_RANK[p[0].severity], p[0].loss))
+
     notes: List[str] = []
     if worst is not None:
-        notes.append(worst[1] + worst[0].text)
+        notes.append((f"{worst[1].name}: " if several else "")
+                     + worst[0].text)
     elif lowest is not None:
         notes.append((f"{lowest.name}: " if several else "")
                      + lowest.headline)
+
+    # The details leave out whatever the note already says.
+    details: List[str] = []
+    technical: List[str] = []
+    for a in assessed:
+        pct = a.health.health_pct
+        if pct is None:
+            details.append(f"{a.name}: health could not be read.")
+        else:
+            line = f"{a.name}: Health {pct}%."
+            if worst is not None or a is not lowest:
+                line += f" {a.headline}"
+            details.append(line)
+            details.extend(r.text for r in a.health.reasons[:3]
+                           if worst is None or r is not worst[0])
+            details.append(f"Estimated remaining life: {a.life.text}.")
+        technical.append(f"{a.name} — read by "
+                         f"{SOURCE_LABELS.get(a.drive.get('source'), '?')}")
+        technical.extend(f"  {line}" for line in a.health.technical())
+
+    score = float(lowest.health.health_pct) if lowest else 100.0
     if not data.get("smart_readable", False):
         notes.append("Run as Administrator for full S.M.A.R.T. detail.")
         score = min(score, 80.0)  # cap: we can't fully verify wear
@@ -377,9 +382,9 @@ def subhead_for(components: List[ComponentScore]) -> str:
                   if c.status == "inconclusive"]
     if fails:
         text = "Failing checks: " + ", ".join(fails) + \
-            (("; caution on " + ", ".join(warns)) if warns else "")
+            (("; caution on " + ", ".join(warns)) if warns else "") + "."
     elif warns:
-        text = "Worth a closer look: " + ", ".join(warns)
+        text = "Worth a closer look: " + ", ".join(warns) + "."
     elif unverified:
         text = "Everything that could be tested is within healthy limits."
     else:

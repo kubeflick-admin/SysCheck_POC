@@ -1,5 +1,6 @@
 """Boot / splash view — a terminal-initialisation sequence then a single
-big 'INITIATE DIAGNOSTIC' action."""
+big 'INITIATE DIAGNOSTIC' action. Without elevation it opens with a
+banner asking to run as Administrator."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QPushButton, QWidget
 
 from ... import config
+from ...telemetry.smart_sources.smartctl import is_admin
 from ..widgets import TelemetryConsole
 from ._common import label, panel
 
@@ -33,6 +35,14 @@ class SplashView(QWidget):
 
         root.addWidget(label(config.APP_TITLE, "h1"))
         root.addWidget(label(config.APP_TAGLINE, "dim"))
+
+        self._admin_banner = label(config.ADMIN_BANNER)
+        self._admin_banner.setWordWrap(True)
+        self._admin_banner.setStyleSheet(
+            f"color:{config.COL_AMBER}; border:1px solid {config.COL_AMBER};"
+            f" padding:10px 14px; font-weight:bold;")
+        self._admin_banner.setVisible(not is_admin())
+        root.addWidget(self._admin_banner)
 
         box = panel(accent=True)
         box_l = QVBoxLayout(box)

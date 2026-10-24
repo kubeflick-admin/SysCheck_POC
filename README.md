@@ -138,7 +138,8 @@ The result is `dist\SysCheck.exe`.
 
 - **Administrator rights**: ACPI thermal zones
   (`MSAcpi_ThermalZoneTemperature`) and most drive health data need
-  elevation. Without it the app still runs and marks those fields N/A.
+  elevation. Without it the app still runs and marks those fields N/A,
+  and the start screen and the report open with a banner saying so.
 - **Drive health sources**: each drive is read by the first of three layers
   that works: the bundled `smartctl` (JSON output), then Windows'
   `MSFT_StorageReliabilityCounter`, then the raw ATA S.M.A.R.T. blobs

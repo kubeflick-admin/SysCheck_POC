@@ -13,7 +13,8 @@ from syscheck.diagnostics.keyboard import all_labels
 from syscheck.telemetry.smart_sources import smartctl
 from syscheck.ui.main_window import MainWindow
 from syscheck.ui.views import (BatteryView, KeyboardView, ResultsView,
-                               StorageView, TelemetryView, ThermalView)
+                               SplashView, StorageView, TelemetryView,
+                               ThermalView)
 from syscheck.ui.widgets import HealthBar
 
 FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
@@ -186,6 +187,32 @@ def test_storage_page_has_a_page_and_tab_per_drive(qtbot):
     texts = [lbl.text() for lbl in page.findChildren(QLabel)]
     assert "S3Z2NB0K123456X" in texts                     # serial shown
     assert "FAIR" in texts
+
+
+def test_storage_page_nvme_table_is_name_value_status(qtbot):
+    view = StorageView()
+    qtbot.addWidget(view)
+    view.set_storage(_storage("nvme_healthy"))
+    table = view._pages.currentWidget().findChild(QTableWidget)
+    headings = [table.horizontalHeaderItem(c).text()
+                for c in range(table.columnCount())]
+    assert headings == ["NAME", "VALUE", "STATUS"]
+    assert (table.item(0, 0).text(), table.item(0, 1).text(),
+            table.item(0, 2).text()) == ("Critical warning", "0x00", "OK")
+    texts = [lbl.text() for lbl in view.findChildren(QLabel)]
+    assert any(t.startswith("Unsafe shutdowns are times") for t in texts)
+
+
+@pytest.mark.parametrize("admin", [False, True])
+def test_start_screen_asks_for_administrator(qtbot, monkeypatch, admin):
+    monkeypatch.setattr("syscheck.ui.views.splash_view.is_admin",
+                        lambda: admin)
+    view = SplashView()
+    qtbot.addWidget(view)
+    assert view._admin_banner.text() == ("Run as Administrator for "
+                                         "temperatures and full drive "
+                                         "details.")
+    assert view._admin_banner.isHidden() is admin
 
 
 def test_storage_page_for_one_drive_hides_the_selector(qtbot):

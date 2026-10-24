@@ -148,10 +148,24 @@ def temperature_words(now: object, peak: object) -> str:
     if now is None and peak is None:
         return NA
     if peak is None:
-        return f"{now} °C"
+        return f"{now} °C now · max not reported"
     if now is None:
         return f"{peak} °C max"
     return f"{now} °C now · {peak} °C max"
+
+
+# Shown under a drive's details whenever it reports the count.
+UNSAFE_SHUTDOWNS_TEXT = (
+    "Unsafe shutdowns are times the drive lost power without warning (a flat "
+    "battery, a crash or holding the power button); they rarely cause damage "
+    "and don't lower Health %.")
+
+
+def unsafe_shutdowns_note(drive: Dict[str, object]) -> Optional[str]:
+    """What the unsafe-shutdown count means, or None without a count."""
+    if as_int(drive.get("unsafe_shutdowns")) is None:
+        return None
+    return UNSAFE_SHUTDOWNS_TEXT
 
 
 def _count(value: object) -> str:
@@ -217,6 +231,19 @@ class SmartRow:
     raw: str
     status: str
     severity: str           # ok | info | warn | fail
+
+    def cells(self, columns: Tuple[str, ...]) -> Tuple[str, ...]:
+        """This row's text under each of ``columns``."""
+        return tuple(getattr(self, _COLUMN_FIELDS[c]) for c in columns)
+
+
+ATA_COLUMNS = ("ID", "ATTRIBUTE", "VALUE", "WORST", "THRESH", "RAW", "STATUS")
+# NVMe health-log fields are plain values, with no normalised value, worst
+# or threshold, so their table is just the name, value and status.
+NVME_COLUMNS = ("NAME", "VALUE", "STATUS")
+_COLUMN_FIELDS = {"ID": "id", "ATTRIBUTE": "name", "NAME": "name",
+                  "VALUE": "value", "WORST": "worst", "THRESH": "thresh",
+                  "RAW": "raw", "STATUS": "status"}
 
 
 # NVMe SMART / Health log fields, in log order, numbered the way common
@@ -297,7 +324,7 @@ def _nvme_status(key: str, value: int, log: Dict[str, object]
     return "OK", "ok"
 
 
-def _nvme_raw(key: str, value: int) -> str:
+def _nvme_value(key: str, value: int) -> str:
     if key == "critical_warning":
         return f"0x{value:02X}"
     if key == "temperature":
@@ -316,15 +343,15 @@ def _nvme_rows(log: Dict[str, object]) -> List[SmartRow]:
         value = as_int(log.get(key))
         if value is None:
             continue
-        thresh = "—"
-        if key == "available_spare":
-            thresh = _num(as_int(log.get("available_spare_threshold")))
-        elif key == "percentage_used":
-            thresh = "100"
         status, severity = _nvme_status(key, value, log)
-        rows.append(SmartRow(f"{number:02X}", name, "—", "—", thresh,
-                             _nvme_raw(key, value), status, severity))
+        rows.append(SmartRow(f"{number:02X}", name, _nvme_value(key, value),
+                             "—", "—", "—", status, severity))
     return rows
+
+
+def smart_columns(drive: Dict[str, object]) -> Tuple[str, ...]:
+    """The headings of the drive's :func:`smart_rows` table."""
+    return ATA_COLUMNS if attributes(drive) else NVME_COLUMNS
 
 
 def smart_rows(drive: Dict[str, object]) -> List[SmartRow]:

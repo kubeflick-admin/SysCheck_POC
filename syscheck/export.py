@@ -19,9 +19,11 @@ from html import escape
 from typing import Dict, List, Optional
 
 from . import __version__, config
-from .diskhealth.describe import (SOURCE_LABELS, DriveAssessment, assess,
-                                  condition, detail_rows, no_table_reason,
-                                  size_words, smart_rows)
+from .diskhealth.describe import (ATA_COLUMNS, SOURCE_LABELS,
+                                  DriveAssessment, assess, condition,
+                                  detail_rows, no_table_reason, size_words,
+                                  smart_columns, smart_rows,
+                                  unsafe_shutdowns_note)
 from .scoring import (STATUS_WORDS, UNSCORED, ComponentScore,
                       _band_from_status, build_report, headline_for,
                       subhead_for)
@@ -87,6 +89,8 @@ p {{ margin: 6px 0; }}
   border-radius: 6px; padding: 14px 16px; margin: 10px 0;
 }}
 .accent {{ border-color: var(--blue); }}
+.banner {{ border-color: var(--amber); color: var(--amber);
+  font-weight: bold; }}
 .meta {{ display: flex; flex-wrap: wrap; gap: 4px 28px; margin-top: 6px; }}
 .label {{ color: var(--dim); font-size: 12px; letter-spacing: 1px; }}
 .verdict {{ display: flex; gap: 20px; align-items: center; }}
@@ -240,17 +244,22 @@ def _smart_table(a: DriveAssessment) -> str:
     rows = smart_rows(a.drive)
     if not rows:
         return f"<p class='dim'>{_e(no_table_reason(a.drive))}</p>"
-    head = "".join(f"<th>{h}</th>" for h in (
-        "ID", "ATTRIBUTE", "VALUE", "WORST", "THRESH", "RAW", "STATUS"))
+    columns = smart_columns(a.drive)
+    centred = (("ID", "VALUE", "WORST", "THRESH")
+               if columns == ATA_COLUMNS else ())
+    head = "".join(f"<th>{h}</th>" for h in columns)
     body = []
     for r in rows:
         cls = _ROW_CLASS[r.severity]
-        name_cls = f" class='{cls}'" if r.severity in ("warn", "fail") else ""
-        body.append(
-            f"<tr><td class='num'>{_e(r.id)}</td><td{name_cls}>{_e(r.name)}"
-            f"</td><td class='num'>{_e(r.value)}</td><td class='num'>"
-            f"{_e(r.worst)}</td><td class='num'>{_e(r.thresh)}</td>"
-            f"<td>{_e(r.raw)}</td><td class='{cls}'>{_e(r.status)}</td></tr>")
+        cells = []
+        for col, text in zip(columns, r.cells(columns), strict=True):
+            if col == "STATUS" or (col in ("ATTRIBUTE", "NAME")
+                                   and r.severity in ("warn", "fail")):
+                attr = f" class='{cls}'"
+            else:
+                attr = " class='num'" if col in centred else ""
+            cells.append(f"<td{attr}>{_e(text)}</td>")
+        body.append(f"<tr>{''.join(cells)}</tr>")
     return (f"<div class='scroll'><table class='smart'><thead><tr>{head}"
             f"</tr></thead><tbody>{''.join(body)}</tbody></table></div>")
 
@@ -263,6 +272,8 @@ def _drive(a: DriveAssessment, hide_serial: bool) -> str:
     life = a.life.text + (" (rough: power-on time estimated)"
                           if a.life.rough else "")
     tech = "".join(f"<li>{_e(t)}</li>" for t in a.health.technical())
+    note = unsafe_shutdowns_note(a.drive)
+    note = f"<p class='dim'>{_e(note)}</p>" if note else ""
     source = SOURCE_LABELS.get(a.drive.get("source"), "?")
     kind_size = f"{a.drive.get('kind')} · {size_words(a.drive.get('size_gb'))}"
     return f"""
@@ -282,6 +293,7 @@ def _drive(a: DriveAssessment, hide_serial: bool) -> str:
      <strong class="{life_cls}">{_e(life)}</strong></p>
   <h4>DRIVE DETAILS</h4>
   {_detail_table(detail_rows(a.drive, hide_serial=hide_serial))}
+  {note}
   <h4>S.M.A.R.T. ATTRIBUTES <span class="dim">· read by {_e(source)}</span></h4>
   {_smart_table(a)}
   <h4>HOW THE HEALTH % WAS WORKED OUT</h4>
@@ -306,10 +318,13 @@ def render_html_report(results: Dict[str, object], *, computer: str,
                        admin: Optional[bool] = None) -> str:
     """The full report: verdict, system, every subsystem, then storage
     with each drive's S.M.A.R.T. table. ``hide_serials`` replaces drive
-    serial numbers with "Hidden"."""
+    serial numbers with "Hidden". ``admin=False`` adds the Run as
+    Administrator banner at the top."""
     results = results or {}
     report = build_report(results)
     admin_text = {True: "Yes", False: "No"}.get(admin, "Unknown")
+    banner = (f'<section class="panel banner">{_e(config.ADMIN_BANNER)}'
+              "</section>" if admin is False else "")
     title = f"SysCheck report — {computer} — {generated:%Y-%m-%d}"
     components = "".join(_component(c) for c in report["components"])
     return f"""<!DOCTYPE html>
@@ -332,6 +347,7 @@ def render_html_report(results: Dict[str, object], *, computer: str,
     {"<span>SERIAL NUMBERS <b>hidden</b></span>" if hide_serials else ""}
   </div>
 </header>
+{banner}
 {_verdict(report)}
 {_specs(results.get("specs"))}
 <h2>SUBSYSTEM RESULTS</h2>

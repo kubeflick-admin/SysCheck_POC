@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from syscheck.diskhealth.describe import (assess, condition, data_words,
-                                          detail_rows, no_table_reason,
-                                          on_time_words, size_words,
-                                          smart_rows, temperature_words)
+from syscheck.diskhealth.describe import (ATA_COLUMNS, NVME_COLUMNS,
+                                          UNSAFE_SHUTDOWNS_TEXT, assess,
+                                          condition, data_words, detail_rows,
+                                          no_table_reason, on_time_words,
+                                          size_words, smart_columns,
+                                          smart_rows, temperature_words,
+                                          unsafe_shutdowns_note)
 from syscheck.telemetry.smart_sources import smartctl
 from syscheck.telemetry.smart_sources.schema import new_drive
 
@@ -85,8 +88,24 @@ def test_data_words(tb, text):
 
 def test_temperature_words():
     assert temperature_words(38, 61) == "38 °C now · 61 °C max"
-    assert temperature_words(38, None) == "38 °C"
+    assert temperature_words(38, None) == "38 °C now · max not reported"
+    assert temperature_words(None, 61) == "61 °C max"
     assert temperature_words(None, None) == "n/a"
+
+
+def test_detail_rows_say_when_no_max_temperature_is_reported():
+    nvme = dict(detail_rows(_fixture("nvme_healthy")))
+    sata = dict(detail_rows(_fixture("sata_ssd_bad_sectors")))
+    assert nvme["Temperature"] == "38 °C now · max not reported"
+    assert sata["Temperature"] == "36 °C now · 61 °C max"
+
+
+@pytest.mark.parametrize("count, note", [
+    (56, UNSAFE_SHUTDOWNS_TEXT), (0, UNSAFE_SHUTDOWNS_TEXT), (None, None),
+])
+def test_unsafe_shutdowns_are_explained_when_counted(count, note):
+    assert unsafe_shutdowns_note(new_drive(unsafe_shutdowns=count)) == note
+    assert UNSAFE_SHUTDOWNS_TEXT.count(".") == 1          # one sentence
 
 
 def test_detail_rows_can_hide_the_serial():
@@ -105,7 +124,9 @@ def _rows(drive):
 
 
 def test_ata_table_flags_the_damage_counters():
-    rows = _rows(_fixture("sata_ssd_bad_sectors"))
+    drive = _fixture("sata_ssd_bad_sectors")
+    assert smart_columns(drive) == ATA_COLUMNS
+    rows = _rows(drive)
     assert len(rows) == 11
     for attr_id in ("5", "187", "197"):
         assert (rows[attr_id].status, rows[attr_id].severity) == (
@@ -114,6 +135,8 @@ def test_ata_table_flags_the_damage_counters():
     assert (rows["5"].value, rows["5"].worst, rows["5"].thresh) == (
         "99", "99", "10")
     assert rows["194"].raw == "36 (Min/Max 18/61)"      # smartctl's own text
+    assert rows["5"].cells(ATA_COLUMNS)[:3] == ("5", "Reallocated Sector Ct",
+                                                "99")
     assert rows["9"].status == "OK"
 
 
@@ -139,12 +162,14 @@ def test_ata_table_marks_failing_and_hot_attributes():
     assert (rows["194"].status, rows["194"].severity) == ("Too hot", "warn")
 
 
-def test_nvme_table_comes_from_the_health_log():
-    rows = {r.name: r for r in smart_rows(_fixture("nvme_healthy"))}
-    assert rows["Critical warning"].id == "01"
-    assert rows["Critical warning"].raw == "0x00"
-    assert rows["Data units written"].raw == "23,456,789 (12.0 TB)"
-    assert rows["Available spare"].thresh == "10"
+def test_nvme_table_is_name_value_status_from_the_health_log():
+    drive = _fixture("nvme_healthy")
+    assert smart_columns(drive) == NVME_COLUMNS == ("NAME", "VALUE", "STATUS")
+    rows = {r.name: r for r in smart_rows(drive)}
+    assert rows["Critical warning"].cells(NVME_COLUMNS) == (
+        "Critical warning", "0x00", "OK")
+    assert rows["Data units written"].value == "23,456,789 (12.0 TB)"
+    assert rows["Available spare threshold"].value == "10%"
     assert {r.status for r in rows.values()} == {"OK"}
 
 

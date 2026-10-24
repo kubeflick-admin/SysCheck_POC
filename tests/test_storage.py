@@ -211,8 +211,8 @@ def test_score_reads_the_collector_output(sources):
 
     assert comp.status == "pass"
     assert comp.score == 98.0                           # 2% of life used
-    assert comp.details[0].startswith("Samsung SSD 970 EVO Plus 500GB: "
-                                      "Health 98%. The SSD is in perfect")
+    assert comp.note.startswith("The SSD is in perfect condition.")
+    assert comp.details[0] == "Samsung SSD 970 EVO Plus 500GB: Health 98%."
 
 
 def test_unreadable_drive_keeps_the_administrator_cap(sources):

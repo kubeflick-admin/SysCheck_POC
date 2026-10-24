@@ -12,6 +12,9 @@ from __future__ import annotations
 # ─────────────────────────────────────────────────────────────────────
 APP_TITLE = "SysCheck // Laptop Diagnostic Console"
 APP_TAGLINE = "SECOND-HAND HARDWARE INTEGRITY SCANNER"
+# Shown on the start screen and at the top of the report when the app
+# isn't elevated (thermal zones and most drive data need Administrator).
+ADMIN_BANNER = "Run as Administrator for temperatures and full drive details."
 
 # ─────────────────────────────────────────────────────────────────────
 # Cyber-HUD palette  (hex strings, consumed by theme.py + widgets)

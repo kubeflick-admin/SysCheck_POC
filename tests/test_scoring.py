@@ -8,7 +8,8 @@ import pytest
 from syscheck import config
 from syscheck.scoring import (ComponentScore, build_report, compute_overall,
                               score_battery, score_camera, score_keyboard,
-                              score_ports, score_storage, score_thermal)
+                              score_ports, score_storage, score_thermal,
+                              subhead_for)
 from syscheck.telemetry.smart_sources import smartctl
 
 FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
@@ -86,6 +87,26 @@ def test_storage_note_for_a_healthy_drive_is_its_headline():
     comp = score_storage(_storage("nvme_healthy"))
     assert comp.status == "pass"
     assert comp.note == "The SSD is in perfect condition. No problems found."
+    # Said once on the card: the details don't repeat it.
+    assert not any("perfect condition" in d for d in comp.details)
+
+
+def test_storage_details_do_not_repeat_the_worst_finding():
+    comp = score_storage(_storage("sata_ssd_bad_sectors"))
+    assert comp.note == "The drive reported 4 read errors it could not fix."
+    assert comp.note not in comp.details
+    assert comp.details[0] == ("Samsung SSD 860 EVO 500GB: Health 78%. The "
+                               "SSD shows wear or problems. Keep backups and "
+                               "check it again soon.")
+    assert any("5 unstable areas" in d for d in comp.details)
+
+
+def test_storage_with_two_healthy_drives_names_each_once():
+    comp = score_storage(_storage("nvme_healthy", "nvme_healthy"))
+    lines = [comp.note, *comp.details]
+    assert sum("perfect condition" in line for line in lines) == 2
+    assert comp.details[0].endswith("Health 98%.")       # in the note
+    assert comp.details[3].endswith("No problems found.")
 
 
 def test_failing_drive_fails_storage():
@@ -111,6 +132,20 @@ def test_unreadable_drive_is_named_in_the_details():
     comp = score_storage(data)
     assert comp.details == ["Mystery SSD: health could not be read."]
     assert comp.score == 80.0                      # the Administrator cap
+
+
+# ── verdict line ───────────────────────────────────────────────────────
+def test_verdict_line_ends_each_list_with_a_full_stop():
+    comps = [_comp("camera", 65, "warn"), _comp("keyboard", 75, "warn"),
+             _comp("ports", 0, "inconclusive")]
+    comps[0].label, comps[2].label = "Webcam", "Ports"
+    assert subhead_for(comps) == ("Worth a closer look: Webcam, Keyboard. "
+                                  "Not verified: Ports.")
+    comps.append(_comp("storage", 30, "fail"))
+    assert subhead_for(comps) == ("Failing checks: Storage; caution on "
+                                  "Webcam, Keyboard. Not verified: Ports.")
+    assert subhead_for([_comp("battery", 100, "pass")]) == (
+        "All subsystems within healthy limits.")
 
 
 # ── battery ────────────────────────────────────────────────────────────
