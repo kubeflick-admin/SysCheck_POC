@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from perf_samples import reference_perf
 from syscheck.export import (computer_name, default_report_name,
                              render_html_report)
 from syscheck.telemetry.smart_sources import smartctl
@@ -145,6 +146,54 @@ def test_drive_text_is_escaped():
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
     assert "<b>pc</b>" not in html
+
+
+# ── performance ────────────────────────────────────────────────────────
+def test_report_has_the_performance_section():
+    results = _results("nvme_healthy")
+    results["performance"] = reference_perf(background={"startup_count": 22})
+    html = _render(results)
+    assert "<h3>PERFORMANCE</h3>" in html and "<h2>PERFORMANCE</h2>" in html
+    assert '<span class="word pass">FAST</span>' in html
+    assert "Fast (92/100). 1 thing can make it hang or feel slow." in html
+    assert ("<li>22 programs start with Windows.<br><span class='dim'>Fix: "
+            "Turn off the ones you don&#x27;t need in Task Manager &gt; "
+            "Startup apps.</span></li>") in html
+    assert ("<td class='label'>GAMING</td><td class='warn'><b>Slow</b> "
+            "<span class='dim'>(no separate graphics card") in html
+    assert "HOW THE SCORE WAS WORKED OUT" in html
+    # The figures appear once, in the section, not again on the card.
+    assert html.count("Score: cpu 30%") == 1
+
+
+@pytest.mark.parametrize("perf, note", [
+    (None, "Performance check skipped."),
+    ({"skipped": True}, "Performance check skipped."),
+    ({"completed": False}, "Performance check stopped early (excluded from "
+                           "grade)."),
+])
+def test_skipped_performance_check_has_only_its_card(perf, note):
+    results = _results("nvme_healthy")
+    if perf is not None:
+        results["performance"] = perf
+    html = _render(results)
+    assert "<h3>PERFORMANCE</h3>" in html and note in html
+    assert "<h2>PERFORMANCE</h2>" not in html
+    assert "WHY IT MIGHT HANG" not in html
+
+
+def test_slow_laptop_lowers_the_grade():
+    results = _results("nvme_healthy")
+    good = _render(results)
+    results["performance"] = reference_perf(
+        cpu={"single": 40.0, "multi": 100.0},
+        memory={"bandwidth_gbps": 6.0, "installed_gb": 4.0},
+        disk={"rand_read_iops": 150, "seq_read_mbps": 100.0,
+              "seq_write_mbps": 90.0})
+    html = _render(results)
+    assert "GRADE A" in good
+    assert "GRADE C" in html                 # a fail caps the grade at C
+    assert '<span class="word fail">SLOW</span>' in html
 
 
 def test_empty_results_still_render():

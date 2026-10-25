@@ -9,12 +9,13 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget
 
+from perf_samples import reference_perf
 from syscheck.diagnostics.keyboard import all_labels
 from syscheck.telemetry.smart_sources import smartctl
 from syscheck.ui.main_window import MainWindow
-from syscheck.ui.views import (BatteryView, KeyboardView, ResultsView,
-                               SplashView, StorageView, TelemetryView,
-                               ThermalView)
+from syscheck.ui.views import (BatteryView, KeyboardView, PerformanceView,
+                               ResultsView, SplashView, StorageView,
+                               TelemetryView, ThermalView)
 from syscheck.ui.widgets import HealthBar
 
 FIXTURES = Path(__file__).parent / "fixtures" / "smartctl"
@@ -128,12 +129,13 @@ def test_closing_the_window_stops_every_worker(qtbot, monkeypatch):
                          (window._telemetry, "stop_worker"),
                          (window._battery, "stop_worker"),
                          (window._ports, "stop_worker"),
+                         (window._performance, "stop_worker"),
                          (window._camera, "stop_camera")):
         monkeypatch.setattr(view, method,
                             lambda v=view: stopped.append(type(v).__name__))
     window.close()
-    assert sorted(stopped) == ["BatteryView", "CameraView", "PortsView",
-                               "TelemetryView", "ThermalView"]
+    assert sorted(stopped) == ["BatteryView", "CameraView", "PerformanceView",
+                               "PortsView", "TelemetryView", "ThermalView"]
 
 
 def test_telemetry_card_shows_drive_health(qtbot):
@@ -249,6 +251,77 @@ def test_flow_visits_storage_between_telemetry_and_battery(qtbot,
     window._storage._btn.click()
     assert window._stack.currentWidget() is window._battery
     assert window._header._title.text() == "BATTERY"
+
+
+# ── performance ────────────────────────────────────────────────────────
+@pytest.fixture
+def perf_view(qtbot):
+    view = PerformanceView()
+    qtbot.addWidget(view)
+    return view
+
+
+def test_performance_waits_for_start(perf_view):
+    assert perf_view._ring._caption == "READY"
+    assert not perf_view._run_btn.isHidden()
+    assert perf_view._btn.isHidden()
+    assert perf_view._result_card.isHidden()
+    assert perf_view._worker is None
+
+
+def test_performance_can_be_skipped(perf_view):
+    finished = _record(perf_view.finished)
+    statuses = _record(perf_view.status)
+    moved_on = _record(perf_view.next_requested)
+    perf_view._skip_btn.click()
+    assert finished == [({"skipped": True},)]
+    assert statuses[-1] == ("performance", "idle")
+    assert moved_on == [()]
+
+
+def test_performance_result_shows_causes_and_use_guide(perf_view):
+    statuses = _record(perf_view.status)
+    perf_view.set_context({"storage": {"drives": [{"kind": "SATA SSD"}]}})
+    perf_view._on_finished(reference_perf(disk={"rand_read_iops": 250},
+                                          background={"startup_count": 26}))
+    assert statuses[-1] == ("performance", "warn")   # a serious cause
+    hangs = perf_view._hangs.text()
+    assert hangs.index("as slow as an old hard disk") < hangs.index(
+        "26 programs start with Windows.")
+    assert "Check its health in the Storage section." in hangs
+    uses = [perf_view._uses.itemAt(i).widget().text()
+            for i in range(perf_view._uses.count())]
+    assert uses[:2] == ["BROWSING", "OK"]
+    assert uses[-1].startswith("Slow — no separate graphics card")
+    assert not perf_view._btn.isHidden() and perf_view._run_btn.isHidden()
+
+
+def test_stopped_performance_check_shows_only_the_note(perf_view):
+    statuses = _record(perf_view.status)
+    perf_view._on_finished({"completed": False, "cpu": {"single": 200.0}})
+    assert statuses[-1] == ("performance", "idle")
+    assert perf_view._headline.text() == ("Performance check stopped early "
+                                          "(excluded from grade).")
+    assert perf_view._details.isHidden()
+    assert perf_view._ring._caption == "—"
+
+
+def test_flow_visits_performance_between_ports_and_verdict(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._results = {"storage": _storage("nvme_healthy")}
+
+    window._ports.next_requested.emit()
+    assert window._stack.currentWidget() is window._performance
+    assert window._header._title.text() == "PERFORMANCE"
+    assert window._performance._context["storage"]["drives"]
+
+    window._performance._on_finished(reference_perf())
+    window._performance._btn.click()
+    assert window._stack.currentWidget() is window._results_view
+    assert window._results["performance"]["completed"]
+    texts = [lbl.text() for lbl in window._results_view.findChildren(QLabel)]
+    assert "Fast (92/100). Nothing found that should make it hang." in texts
 
 
 # ── report export ──────────────────────────────────────────────────────

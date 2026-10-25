@@ -10,6 +10,7 @@ from .camera_view import CameraView
 from .keyboard_view import KeyboardView
 from .touchpad_view import TouchpadView
 from .ports_view import PortsView
+from .performance_view import PerformanceView
 from .results_view import ResultsView
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "KeyboardView",
     "TouchpadView",
     "PortsView",
+    "PerformanceView",
     "ResultsView",
 ]

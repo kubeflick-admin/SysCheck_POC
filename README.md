@@ -24,8 +24,9 @@ then renders a single **A / B / C / F** health score.
 | **Keyboard test**   | "Piano roll" layout that lights each key as it registers |
 | **Touchpad test**   | Cursor-coverage grid plus left/right/double-click and scroll gesture checks |
 | **Ports test**      | Live USB plug/unplug detection per port, with USB + display-output inventory |
+| **Performance & hangs** | About 2 minutes: idle load, processor (one core and all cores, clock held), memory bandwidth, drive speed (sequential and 4 KB random), stutter/freeze timing at idle and under load, startup programs, power plan and 30 days of crash/hang history. Gives a 0–100 score with a label (Fast / Good / OK for basic use / Slow), a "Why it might hang" list with plain fixes, most likely first, and a typical-use guide |
 | **Health score**    | Weighted A/B/C/F verdict with a plain-language per-subsystem summary |
-| **Export report**   | One self-contained HTML file (opens in any browser, prints to PDF) with the grade, every result and the full storage section; serial numbers can be hidden |
+| **Export report**   | One self-contained HTML file (opens in any browser, prints to PDF) with the grade, every result, the full storage section and the performance section; serial numbers can be hidden |
 
 Checks that ran but couldn't verify a part (no USB device plugged in, a
 sensor that can't be read, a webcam that won't open) are reported as
@@ -50,6 +51,13 @@ SysCheck_POC/
     ├── diskhealth/             # Qt- and WMI-free drive judgement
     │   ├── health.py           # Health % + estimated remaining life
     │   └── describe.py         # plain-English wording, S.M.A.R.T. table rows
+    ├── perf/                   # Qt- and WMI-free performance judgement
+    │   ├── stutter.py          # stutter / freeze gap counting
+    │   ├── events.py           # event-log parsing, recent-reinstall check
+    │   ├── system.py           # power plan, startup items, memory channels
+    │   ├── score.py            # sub-scores, 0–100 score, label, use guide
+    │   ├── hangs.py            # "why it might hang" rules
+    │   └── describe.py         # plain-English rows and technical lines
     ├── telemetry/              # MODULE 1 — silent hardware telemetry
     │   ├── wmi_util.py         # per-thread COM/WMI helper
     │   ├── specs.py            # CPU / RAM / GPU / board / BIOS
@@ -62,19 +70,22 @@ SysCheck_POC/
     │   │   └── matching.py     # same drive across sources
     │   ├── battery.py          # ACPI + powercfg report, + discharge test
     │   ├── thermal.py          # synthetic load + sensor sampling
-    │   └── ports.py            # USB enumeration + display-output detection
+    │   ├── ports.py            # USB enumeration + display-output detection
+    │   ├── performance.py      # the performance & hang check, stage by stage
+    │   └── disk_speed.py       # unbuffered drive test on one temporary file
     ├── diagnostics/            # MODULE 2 — user-guided (Qt-free logic)
     │   ├── camera.py           # Laplacian-variance focus scoring
     │   ├── keyboard.py         # layout data + actuation state machine
     │   └── touchpad.py         # cursor-coverage grid + gesture state machine
     ├── workers/
-    │   └── threads.py          # QThread workers (telemetry/battery/thermal/camera/ports)
+    │   └── threads.py          # QThread workers (telemetry/battery/thermal/camera/ports/performance)
     └── ui/
         ├── theme.py            # QSS cyber-HUD stylesheet
         ├── widgets.py          # progress ring, console, indicator, graph
         ├── main_window.py      # console rail + stacked diagnostic flow
         └── views/              # splash, telemetry, storage, battery, thermal,
-                                #   camera, keyboard, touchpad, ports, results
+                                #   camera, keyboard, touchpad, ports,
+                                #   performance, results
 ```
 
 ## Run from source
@@ -160,6 +171,32 @@ The result is `dist\SysCheck.exe`.
 - **Report**: *Export report* on the Verdict page saves
   `SysCheck_<computer>_<date>.html`. It needs no internet and no other
   files; use the browser's Print → Save as PDF for a PDF.
+- **Performance check**: the last step before the Verdict. It waits for
+  *Start check* and can be skipped or stopped; a skipped or stopped run is
+  left out of the grade. Everything it does is read-only except one
+  256 MB file in `%TEMP%` for the drive test. The file is opened
+  unbuffered and write-through so the cache can't flatter the result, and
+  it is deleted when the test ends, fails or is stopped. If unbuffered I/O
+  isn't possible, the drive test runs through the cache and isn't scored.
+  One 30 s window measures both the idle load and the idle stutter.
+  The processor test times fixed zlib work units on one thread and then
+  on all threads. It doesn't use NumPy, whose bundled maths library picks
+  a slow fallback on some new CPUs.
+- **Performance score**: each figure is compared with a reference laptop
+  (Core Ultra 7 265H, 32 GB DDR5, SK hynix PC801 NVMe). Matching the
+  reference scores 90, and every halving costs 25 points. Processor 30%,
+  memory 15%, drive 35% and responsiveness (stutters and freezes) 20%
+  make the 0–100 score. Memory is capped for small amounts installed
+  (75 for 8 GB, 45 for 4 GB). The reference values, the bands, the
+  weights and every hang threshold are in `config.py` (`PERF_*`).
+  Performance counts 15% of the overall grade.
+- **Crash and hang history**: Application Hang 1002, Application Error
+  1000, Kernel-Power 41, BugCheck 1001 and disk 7 / 51 / 153 from the last
+  30 days, read with `wevtutil` (no elevation needed). When both the
+  Windows install date and the oldest System event are under 14 days old,
+  the report says "history not available — Windows was reinstalled
+  recently" rather than calling the laptop trouble-free. A feature update
+  resets the install date but not the logs, so it doesn't count.
 - **GPU VRAM**: WMI's `AdapterRAM` is a signed 32-bit field (unreliable above
   4 GB); NVIDIA cards are enriched via `GPUtil` when present.
 - **Thermal sensors**: many consumer laptops don't expose a usable thermal

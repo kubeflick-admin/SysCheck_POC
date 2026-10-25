@@ -161,6 +161,113 @@ TOUCHPAD_COVERAGE_FAIL_PCT = 60.0
 PORTS_POLL_HZ = 2                # USB enumeration polls per second
 
 # ─────────────────────────────────────────────────────────────────────
+# Performance & hang check (syscheck/perf, telemetry/performance.py)
+# ─────────────────────────────────────────────────────────────────────
+PERF_IDLE_S = 30                 # idle load + idle stutter share this window
+PERF_CPU_TEST_S = 10             # each of the one-core and all-core tests
+PERF_LOAD_STUTTER_S = 20         # stutter test under full CPU load
+PERF_MEMORY_TEST_MB = 256        # copy-bandwidth array (shrinks if memory is short)
+PERF_DISK_TEST_MB = 256          # the one temporary file, in %TEMP%
+PERF_DISK_CHUNK_MB = 4           # sequential read / write block
+PERF_DISK_RANDOM_S = 5           # 4 KB random reads for this long
+PERF_DISK_PHASE_MAX_S = 30       # a very slow drive stops each phase early
+PERF_DISK_MIN_FREE_MB = 1024     # skip the drive test with less free space than this
+
+# Stutter test: a 10 ms timer loop; longer gaps between wake-ups are felt.
+PERF_TICK_MS = 10
+PERF_STUTTER_MS = 50             # gap over this: a stutter
+PERF_FREEZE_MS = 250             # gap over this: a freeze
+
+# Reference values: the reference laptop (Core Ultra 7 265H, 32 GB DDR5,
+# SK hynix PC801 NVMe) scores PERF_REFERENCE_POINTS on each measurement;
+# every halving costs PERF_POINTS_PER_HALVING and every doubling adds as
+# much, up to 100. cpu_single / cpu_multi / memory were measured on that
+# laptop in WSL2, median of 5 runs. WSL2 saw 6 of its 16 cores, so
+# cpu_multi is provisional: replace it with the all-core figure from a
+# Windows run (Performance card > Technical details). The drive values
+# are typical for a PCIe 4 NVMe SSD read one block at a time.
+PERF_REFERENCE = {
+    "cpu_single": 210.0,         # zlib work units / s on one core
+    "cpu_multi": 690.0,          # zlib work units / s on every core (provisional)
+    "memory": 23.5,              # GB/s copy bandwidth (bytes read + written)
+    "seq_read": 3000.0,          # MB/s, 4 MB blocks, unbuffered
+    "seq_write": 2000.0,         # MB/s, 4 MB blocks, write-through
+    "rand_read": 10_000.0,       # 4 KB random reads / s, one at a time
+}
+PERF_REFERENCE_POINTS = 90
+PERF_POINTS_PER_HALVING = 25
+
+# How the sub-scores combine. Everyday speed is mostly one core, and the
+# drive's random reads matter most for how quickly things open.
+PERF_CPU_WEIGHTS = {"single": 0.6, "multi": 0.4}
+PERF_DRIVE_WEIGHTS = {"rand_read": 0.6, "seq_read": 0.2, "seq_write": 0.2}
+PERF_WEIGHTS = {"cpu": 0.30, "memory": 0.15, "drive": 0.35,
+                "responsiveness": 0.20}
+# Installed memory caps the memory sub-score: (at least GB, cap).
+PERF_RAM_CAPS = [(16, 100), (8, 75), (4, 45), (0, 25)]
+# Responsiveness starts at 100; each stutter / freeze takes this many
+# points (up to the max). Gaps under full load count this fraction.
+PERF_STUTTER_PENALTY = 5
+PERF_STUTTER_MAX_LOSS = 40
+PERF_FREEZE_PENALTY = 20
+PERF_FREEZE_MAX_LOSS = 80
+PERF_LOAD_GAP_FACTOR = 0.5
+
+# Performance score -> label and status (first band it reaches).
+PERF_LABELS = [
+    (80, "Fast", "pass"),
+    (60, "Good", "pass"),
+    (40, "OK for basic use", "warn"),
+    (0, "Slow", "fail"),
+]
+
+# Typical-use guide: the lowest of the "needs" sub-scores must reach
+# "ok" for OK, "slow" for Slow, else Not suitable. Less memory than
+# "ram_gb" caps it at Slow (under half: Not suitable); "gpu" needs a
+# separate graphics card for better than Slow.
+PERF_USE_GUIDE = {
+    "Browsing": {"needs": ("cpu", "memory", "drive"), "ok": 30, "slow": 0,
+                 "ram_gb": 4},
+    "Office": {"needs": ("cpu", "memory", "drive"), "ok": 35, "slow": 0,
+               "ram_gb": 4},
+    "Video calls": {"needs": ("cpu", "memory", "responsiveness"), "ok": 50,
+                    "slow": 25, "ram_gb": 8},
+    "Light photo editing": {"needs": ("cpu", "memory", "drive"), "ok": 60,
+                            "slow": 40, "ram_gb": 8},
+    "Gaming": {"needs": ("cpu", "memory"), "ok": 75, "slow": 50,
+               "ram_gb": 16, "gpu": True},
+}
+
+# "Why it might hang" thresholds.
+PERF_IDLE_CPU_WARN_PCT = 15      # CPU busy at idle
+PERF_IDLE_RAM_WARN_PCT = 80      # memory used at idle
+PERF_IDLE_DISK_WARN_PCT = 50     # drive busy at idle
+PERF_LOW_RAM_GB = 4              # this much memory or less is too little
+PERF_COMMIT_WARN_PCT = 90        # memory reserved by programs vs the limit
+PERF_STARTUP_WARN = 15           # programs starting with Windows
+PERF_DISK_FREE_WARN_PCT = 10     # free space on the system drive
+PERF_HDD_IOPS = 400              # random reads / s below this: hard-disk slow
+PERF_SLOW_DRIVE_IOPS = 2000      # ... below this: a slow SSD
+PERF_IDLE_STUTTER_WARN = 5       # stutters at idle worth mentioning
+PERF_HANG_EVENTS_WARN = 3        # "stopped responding" events in the history
+PERF_CRASH_EVENTS_WARN = 3       # program crashes in the history
+PERF_SHUTDOWN_EVENTS_WARN = 2    # unexpected shutdowns in the history
+PERF_SSD_UPGRADE = "about £40"   # what an SSD upgrade costs, for the advice
+# Most likely cause first: higher sorts earlier.
+PERF_HANG_PRIORITY = {
+    "drive_health": 100, "hdd": 95, "disk_errors": 90, "bsod": 85,
+    "freezes": 80, "ram": 75, "low_ram": 74, "thermal": 70, "stutter": 68,
+    "slow_drive": 65, "disk_full": 60, "idle_cpu": 55, "commit": 52,
+    "idle_disk": 50, "startup": 45, "app_hangs": 40, "app_crashes": 35,
+    "shutdowns": 30, "power_saver": 25,
+}
+
+# Event-log history and the "reinstalled recently" check.
+PERF_HISTORY_DAYS = 30
+PERF_REINSTALL_DAYS = 14         # logs younger than this can't vouch for the past
+PERF_EVENT_MAX = 2000            # events read per log
+
+# ─────────────────────────────────────────────────────────────────────
 # Overall score bands (weighted 0–100 → letter grade)
 # ─────────────────────────────────────────────────────────────────────
 GRADE_BANDS = [
@@ -179,4 +286,5 @@ SCORE_WEIGHTS = {
     "keyboard": 0.10,
     "touchpad": 0.10,
     "ports": 0.10,
+    "performance": 0.15,
 }

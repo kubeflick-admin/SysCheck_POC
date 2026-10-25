@@ -24,6 +24,9 @@ from .diskhealth.describe import (ATA_COLUMNS, SOURCE_LABELS,
                                   detail_rows, no_table_reason, size_words,
                                   smart_columns, smart_rows,
                                   unsafe_shutdowns_note)
+from .perf.describe import assess as assess_performance
+from .perf.describe import measurement_rows, technical_lines
+from .perf.score import USE_NO, USE_OK, USE_SLOW
 from .scoring import (STATUS_WORDS, UNSCORED, ComponentScore,
                       _band_from_status, build_report, headline_for,
                       subhead_for)
@@ -49,6 +52,7 @@ _GRADE_CLASS = {"A": "pass", "B": "blue", "C": "warn", "F": "fail",
 _STATUS_CLASS = {"pass": "pass", "warn": "warn", "fail": "fail",
                  "inconclusive": "warn", "skip": "dim"}
 _ROW_CLASS = {"ok": "pass", "info": "blue", "warn": "warn", "fail": "fail"}
+_USE_CLASS = {USE_OK: "pass", USE_SLOW: "warn", USE_NO: "fail"}
 
 
 def _e(value: object) -> str:
@@ -111,6 +115,7 @@ p {{ margin: 6px 0; }}
 ul {{ margin: 4px 0; padding-left: 18px; }}
 li {{ margin: 2px 0; }}
 ul.plain {{ list-style: none; padding-left: 0; }}
+ul.plain li {{ margin: 0 0 8px; }}
 ul.tech {{ list-style: none; padding-left: 0; color: var(--green);
   font-size: 12px; }}
 .health {{ display: flex; align-items: center; gap: 12px; margin: 8px 0; }}
@@ -205,12 +210,12 @@ def _specs(specs: object) -> str:
             f"<table class='details'>{body}</table></section>")
 
 
-def _component(c: ComponentScore) -> str:
+def _component(c: ComponentScore, technical: bool = True) -> str:
     cls = _STATUS_CLASS.get(c.status, "dim")
     score = "" if c.status in UNSCORED else f"{c.score:.0f}/100 · "
     details = "".join(f"<li>{_e(d)}</li>" for d in c.details)
     tech = ""
-    if c.technical:
+    if technical and c.technical:
         tech = ("<h4>TECHNICAL DETAILS</h4><ul class='tech'>"
                 + "".join(f"<li>{_e(t)}</li>" for t in c.technical)
                 + "</ul>")
@@ -310,23 +315,70 @@ def _storage(storage: object, hide_serials: bool) -> str:
     return f"<h2>STORAGE</h2>{body}"
 
 
+def _performance(results: Dict[str, object]) -> str:
+    """Score, why it might hang, typical use and every measurement. Left
+    out when the check was skipped or stopped (its card says so)."""
+    perf = results.get("performance")
+    if (not isinstance(perf, dict) or perf.get("skipped")
+            or not perf.get("completed", True)):
+        return ""
+    a = assess_performance(perf, results)
+    band = _STATUS_CLASS.get(a.status, "dim")
+    score = a.score
+    width = round(score or 0)
+    if a.hangs:
+        hangs = "".join(f"<li>{_e(h.cause)}<br><span class='dim'>Fix: "
+                        f"{_e(h.fix)}</span></li>" for h in a.hangs)
+        hangs = f"<ul class='plain'>{hangs}</ul>"
+    else:
+        hangs = "<p class='pass'>Nothing found that should make it hang.</p>"
+    uses = "".join(
+        f"<tr><td class='label'>{_e(u['use'].upper())}</td>"
+        f"<td class='{_USE_CLASS.get(u['verdict'], 'dim')}'>"
+        f"<b>{_e(u['verdict'] or 'n/a')}</b>"
+        + (f" <span class='dim'>({_e(u['note'])})</span>" if u["note"]
+           else "") + "</td></tr>" for u in a.uses)
+    tech = "".join(f"<li>{_e(t)}</li>" for t in technical_lines(perf, a))
+    return f"""
+<h2>PERFORMANCE</h2>
+<section class="panel accent">
+  <div class="health">
+    <span class="label">SCORE</span>
+    <div class="bar"><div class="fill {band}" style="width:{width}%"></div></div>
+    <span class="pct {band}">{f"{score:.0f}" if score is not None else "N/A"}</span>
+    <span class="word {band}">{_e(a.label.upper())}</span>
+  </div>
+  <p>{_e(a.headline)}</p>
+  <h4>WHY IT MIGHT HANG <span class="dim">· most likely first</span></h4>
+  {hangs}
+  <h4>TYPICAL USE</h4>
+  <table class='details'>{uses}</table>
+  <h4>MEASUREMENTS</h4>
+  {_detail_table(measurement_rows(perf, a.subscores))}
+  <h4>HOW THE SCORE WAS WORKED OUT</h4>
+  <ul class="tech">{tech}</ul>
+</section>"""
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Whole page
 # ─────────────────────────────────────────────────────────────────────
 def render_html_report(results: Dict[str, object], *, computer: str,
                        generated: datetime, hide_serials: bool = False,
                        admin: Optional[bool] = None) -> str:
-    """The full report: verdict, system, every subsystem, then storage
-    with each drive's S.M.A.R.T. table. ``hide_serials`` replaces drive
-    serial numbers with "Hidden". ``admin=False`` adds the Run as
-    Administrator banner at the top."""
+    """The full report: verdict, system, every subsystem, storage with
+    each drive's S.M.A.R.T. table, then performance. ``hide_serials``
+    replaces drive serial numbers with "Hidden". ``admin=False`` adds the
+    Run as Administrator banner at the top."""
     results = results or {}
     report = build_report(results)
     admin_text = {True: "Yes", False: "No"}.get(admin, "Unknown")
     banner = (f'<section class="panel banner">{_e(config.ADMIN_BANNER)}'
               "</section>" if admin is False else "")
     title = f"SysCheck report — {computer} — {generated:%Y-%m-%d}"
-    components = "".join(_component(c) for c in report["components"])
+    # The Performance section below lists the same figures in full.
+    components = "".join(_component(c, technical=c.key != "performance")
+                         for c in report["components"])
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -353,10 +405,14 @@ def render_html_report(results: Dict[str, object], *, computer: str,
 <h2>SUBSYSTEM RESULTS</h2>
 {components}
 {_storage(results.get("storage"), hide_serials)}
+{_performance(results)}
 <footer>
   <p>Drive Health % and remaining life are estimates worked out from each
   drive's own S.M.A.R.T. records. They are not a guarantee: any drive can
   fail without warning, so keep backups.</p>
+  <p>The Performance score compares this laptop with a fast 2025 laptop,
+  which scores about 90. Its drive test wrote one temporary file, deleted
+  straight afterwards; nothing else was changed.</p>
   <p>Drive data is read with smartctl from smartmontools
   (https://www.smartmontools.org/, GPL v2 or later) where it can run,
   otherwise from Windows' own storage counters.</p>

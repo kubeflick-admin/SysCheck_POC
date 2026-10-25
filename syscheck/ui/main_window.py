@@ -14,11 +14,11 @@ from .. import config
 from .widgets import TelemetryConsole, IndicatorLight
 from .views import (SplashView, TelemetryView, StorageView, BatteryView,
                     ThermalView, CameraView, KeyboardView, TouchpadView,
-                    PortsView, ResultsView)
+                    PortsView, PerformanceView, ResultsView)
 from .views._common import StepHeader, panel, label
 
 _STEPS = ["Telemetry", "Storage", "Battery", "Thermal", "Webcam", "Keyboard",
-          "Touchpad", "Ports", "Verdict"]
+          "Touchpad", "Ports", "Performance", "Verdict"]
 
 
 class MainWindow(QMainWindow):
@@ -58,10 +58,11 @@ class MainWindow(QMainWindow):
         self._keyboard = KeyboardView()
         self._touchpad = TouchpadView()
         self._ports = PortsView()
+        self._performance = PerformanceView()
         self._results_view = ResultsView()
         for v in (self._splash, self._telemetry, self._storage, self._battery,
                   self._thermal, self._camera, self._keyboard, self._touchpad,
-                  self._ports, self._results_view):
+                  self._ports, self._performance, self._results_view):
             self._stack.addWidget(v)
 
         self._wire()
@@ -95,7 +96,8 @@ class MainWindow(QMainWindow):
                           ("camera", "Webcam clarity"),
                           ("keyboard", "Keyboard continuity"),
                           ("touchpad", "Touchpad continuity"),
-                          ("ports", "Ports / peripherals")):
+                          ("ports", "Ports / peripherals"),
+                          ("performance", "Performance / hangs")):
             light = IndicatorLight(text)
             self._lights[key] = light
             sp.addWidget(light)
@@ -108,7 +110,7 @@ class MainWindow(QMainWindow):
 
         for view in (self._telemetry, self._battery, self._thermal,
                      self._camera, self._keyboard, self._touchpad,
-                     self._ports):
+                     self._ports, self._performance):
             view.log.connect(self._console.log)
             view.status.connect(self._set_status)
 
@@ -146,7 +148,11 @@ class MainWindow(QMainWindow):
 
         self._ports.finished.connect(
             lambda d: self._results.__setitem__("ports", d))
-        self._ports.next_requested.connect(self._show_results)
+        self._ports.next_requested.connect(self._enter_performance)
+
+        self._performance.finished.connect(
+            lambda d: self._results.__setitem__("performance", d))
+        self._performance.next_requested.connect(self._show_results)
 
         self._results_view.restart_requested.connect(self._reset_flow)
         self._results_view.log.connect(self._console.log)
@@ -160,6 +166,12 @@ class MainWindow(QMainWindow):
         # energy converts a 1%-drop time into watts, and wear feeds its light.
         self._battery.set_battery(self._results.get("battery"))
         self._advance(self._battery, 2)
+
+    def _enter_performance(self) -> None:
+        # The hang causes link to drive health and thermal throttling, and
+        # the use guide needs the graphics card.
+        self._performance.set_context(self._results)
+        self._advance(self._performance, 8)
 
     def _merge_battery(self, discharge: dict) -> None:
         batt = self._results.get("battery")
@@ -206,7 +218,8 @@ class MainWindow(QMainWindow):
         # while still running aborts the whole process.
         for stop in (self._camera.stop_camera, self._battery.stop_worker,
                      self._ports.stop_worker, self._thermal.stop_worker,
-                     self._telemetry.stop_worker):
+                     self._telemetry.stop_worker,
+                     self._performance.stop_worker):
             try:
                 stop()
             except Exception:  # noqa: BLE001

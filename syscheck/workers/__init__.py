@@ -2,7 +2,7 @@
 thread so the HUD never freezes mid-scan."""
 
 from .threads import (TelemetryWorker, ThermalWorker, CameraWorker,
-                      BatteryDischargeWorker, PortsWorker)
+                      BatteryDischargeWorker, PortsWorker, PerformanceWorker)
 
 __all__ = ["TelemetryWorker", "ThermalWorker", "CameraWorker",
-           "BatteryDischargeWorker", "PortsWorker"]
+           "BatteryDischargeWorker", "PortsWorker", "PerformanceWorker"]

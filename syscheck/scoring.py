@@ -18,11 +18,13 @@ live lights and the final verdict can never disagree.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import config
 from .diskhealth.describe import SOURCE_LABELS, assess
 from .diskhealth.health import SEVERITY_RANK
+from .perf.describe import (assess as assess_performance, measurement_rows,
+                            technical_lines, uses_line)
 
 # Statuses that carry no measurement and stay out of the weighted average.
 UNSCORED = ("skip", "inconclusive")
@@ -329,6 +331,30 @@ def score_ports(data: Dict[str, object]) -> ComponentScore:
                           _band_from_status(score), note, details)
 
 
+def score_performance(data: Dict[str, object],
+                      results: Optional[Dict[str, object]] = None
+                      ) -> ComponentScore:
+    """The Performance score (see :mod:`syscheck.perf`). ``results`` is
+    the whole scan: the hang causes link to storage and thermals."""
+    if not data or data.get("skipped"):
+        return ComponentScore("performance", "Performance", 50, "skip",
+                              "Performance check skipped.")
+    if not data.get("completed", True):
+        return ComponentScore("performance", "Performance", 50, "skip",
+                              "Performance check stopped early (excluded "
+                              "from grade).")
+    a = assess_performance(data, results)
+    technical = [f"{k}: {v}" for k, v in measurement_rows(data, a.subscores)]
+    technical += technical_lines(data, a)
+    if a.score is None:
+        return ComponentScore("performance", "Performance", 0, "inconclusive",
+                              a.headline, [], technical)
+    details = [f"{h.cause} Fix: {h.fix}" for h in a.hangs]
+    details.append("Typical use: " + uses_line(a.uses) + ".")
+    return ComponentScore("performance", "Performance", a.score, a.status,
+                          a.headline, details, technical)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Aggregation
 # ─────────────────────────────────────────────────────────────────────
@@ -404,6 +430,7 @@ def build_report(results: Dict[str, object]) -> Dict[str, object]:
         score_keyboard(results.get("keyboard", {})),
         score_touchpad(results.get("touchpad", {})),
         score_ports(results.get("ports", {})),
+        score_performance(results.get("performance", {}), results),
     ]
     overall = compute_overall(components)
     return {"components": components, "overall": overall}

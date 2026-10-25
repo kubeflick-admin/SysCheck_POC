@@ -22,7 +22,7 @@ from __future__ import annotations
 import statistics
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import psutil
@@ -57,7 +57,7 @@ def _read_temp_c(conn) -> Optional[float]:
         return None
 
 
-def _worker_load(stop_event: threading.Event) -> None:
+def worker_load(stop_event: threading.Event) -> None:
     """Hammer a core with matrix multiplication until told to stop."""
     a = np.random.rand(256, 256)
     b = np.random.rand(256, 256)
@@ -65,6 +65,20 @@ def _worker_load(stop_event: threading.Event) -> None:
         # The result is discarded; we only want the FLOPs.
         a = (a @ b) * 0.5 + 0.5
         np.clip(a, 0.0, 1.0, out=a)
+
+
+def is_throttled(freqs: List[float], base_freq: Optional[float],
+                 window: int) -> Tuple[Optional[float], bool]:
+    """(sustained clock, throttled) from clock samples under load.
+
+    Throttling = the clock the CPU *holds* at the end of the run (the
+    median of the last ``window`` samples, which ignores one-off dips)
+    sits well below its base clock.
+    """
+    sustained = statistics.median(freqs[-window:]) if freqs else None
+    throttled = bool(base_freq and sustained and
+                     base_freq - sustained >= config.THERMAL_THROTTLE_DROP_MHZ)
+    return sustained, throttled
 
 
 def _evaluate(temps: List[float], freqs: List[float],
@@ -77,13 +91,9 @@ def _evaluate(temps: List[float], freqs: List[float],
     temp_available = bool(temps) and not temp_stuck
     peak_temp = max(temps) if temp_available else None
 
-    # Throttling = the clock the CPU *holds* at the end of the run sits well
-    # below its base clock; the median ignores one-off dips.
     window = max(1, int(config.THERMAL_SUSTAIN_WINDOW_S
                         * config.THERMAL_SAMPLE_HZ))
-    sustained = statistics.median(freqs[-window:]) if freqs else None
-    throttled = bool(base_freq and sustained and
-                     base_freq - sustained >= config.THERMAL_THROTTLE_DROP_MHZ)
+    sustained, throttled = is_throttled(freqs, base_freq, window)
 
     return {
         "temp_available": temp_available,
@@ -120,7 +130,7 @@ def run_thermal_stress(
 
     stop_event = threading.Event()
     workers = [
-        threading.Thread(target=_worker_load, args=(stop_event,), daemon=True)
+        threading.Thread(target=worker_load, args=(stop_event,), daemon=True)
         for _ in range(n_threads)
     ]
 
