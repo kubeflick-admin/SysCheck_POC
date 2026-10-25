@@ -23,6 +23,10 @@ def build_stylesheet() -> str:
     QWidget#root, QMainWindow {{
         background-color: {c.COL_BG};
     }}
+    /* Scroll areas would paint the light system palette between cards. */
+    QScrollArea, QScrollArea > QWidget > QWidget {{
+        background: transparent;
+    }}
 
     /* Raised panels / cards */
     QFrame#panel {{
@@ -84,6 +88,63 @@ def build_stylesheet() -> str:
         border-color: {c.COL_TEXT};
         background-color: {c.COL_PANEL_HI};
         color: {c.COL_TEXT};
+    }}
+
+    QCheckBox {{
+        color: {c.COL_TEXT_DIM};
+        spacing: 8px;
+        letter-spacing: 1px;
+    }}
+    QCheckBox:hover {{ color: {c.COL_TEXT}; }}
+    QCheckBox::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {c.COL_GRID};
+        border-radius: 2px;
+        background-color: {c.COL_PANEL};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {c.COL_BLUE}; }}
+    QCheckBox::indicator:checked {{
+        border-color: {c.COL_BLUE};
+        background-color: {c.COL_BLUE};
+    }}
+
+    /* Drive selector on the storage page */
+    QPushButton#tab {{
+        border-color: {c.COL_GRID};
+        color: {c.COL_TEXT_DIM};
+        padding: 6px 16px;
+    }}
+    QPushButton#tab:hover {{
+        background-color: {c.COL_PANEL_HI};
+        color: {c.COL_TEXT};
+    }}
+    QPushButton#tab:checked {{
+        border-color: {c.COL_BLUE};
+        background-color: {c.COL_BLUE};
+        color: {c.COL_BG};
+    }}
+
+    /* S.M.A.R.T. attribute table */
+    QTableWidget#smart {{
+        background-color: #070808;
+        alternate-background-color: {c.COL_PANEL};
+        border: 1px solid {c.COL_GRID};
+        border-radius: 4px;
+        gridline-color: {c.COL_GRID};
+        font-size: 12px;
+    }}
+    QTableWidget#smart::item {{
+        padding: 0 6px;
+    }}
+    QHeaderView::section {{
+        background-color: {c.COL_PANEL_HI};
+        color: {c.COL_BLUE};
+        border: none;
+        border-bottom: 1px solid {c.COL_GRID};
+        padding: 4px 6px;
+        font-weight: bold;
+        letter-spacing: 1px;
     }}
 
     /* Telemetry console */

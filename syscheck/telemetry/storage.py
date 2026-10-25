@@ -1,191 +1,193 @@
 """Storage / S.M.A.R.T. collector.
 
-Windows exposes raw S.M.A.R.T. attribute bytes through the WMI classes in
-the ``root\\wmi`` namespace:
+Lists the physical drives (``Win32_DiskDrive`` joined to
+``MSFT_PhysicalDisk`` on the disk number), then for each drive keeps the
+first S.M.A.R.T. layer that can read it:
 
-    MSStorageDriver_FailurePredictData    -> 512-byte vendor blob (attributes)
-    MSStorageDriver_FailurePredictStatus  -> boolean PredictFailure flag
+    A  smartctl (bundled smartmontools)           smart_sources/smartctl.py
+    B  MSFT_StorageReliabilityCounter              smart_sources/reliability.py
+    C  MSStorageDriver_FailurePredict* ATA blobs   smart_sources/wmi_smart.py
 
-The vendor blob follows the ATA layout: a 2-byte header followed by up to
-30 twelve-byte attribute records. We decode the two attributes a buyer
-actually cares about:
+Counters are never mixed across layers, because their units can differ.
+Identity (model, serial, size, kind) fills in from the Windows inventory
+wherever the winning layer left it blank, and a drive no layer can read is
+still listed with ``source="none"`` and Windows' own health status, rather
+than failing the scan.
 
-    0x09 (9)   Power-On Hours
-    0xF1 (241) Total LBAs Written -> Total Host Writes
-
-Health status is taken from the FailurePredict flag, enriched by
-``MSFT_PhysicalDisk.HealthStatus`` where available. Reading SMART usually
-requires the app to run elevated; when it doesn't, we degrade to drive
-model + capacity only and say so, rather than failing the scan.
+Each drive is the normalised dict from ``smart_sources.schema``;
+``syscheck.diskhealth`` turns it into a Health %.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
+from .smart_sources import matching, reliability, smartctl, wmi_smart
+from .smart_sources.schema import (FLAG_UNKNOWN, KIND_UNKNOWN, SOURCE_NONE,
+                                   as_int, new_drive, normalise_serial,
+                                   size_gb)
 from .wmi_util import wmi_connection
 
 LogFn = Callable[[str], None]
-
-ATTR_POWER_ON_HOURS = 0x09
-ATTR_TOTAL_LBA_WRITTEN = 0xF1
-BYTES_PER_LBA = 512
 
 
 def _noop(_: str) -> None:
     pass
 
 
-def _parse_smart_blob(blob: bytes) -> Dict[int, int]:
-    """Decode an ATA S.M.A.R.T. vendor blob into {attribute_id: raw_value}."""
-    attrs: Dict[int, int] = {}
-    # Records start at offset 2; each is 12 bytes wide.
-    for off in range(2, min(len(blob), 2 + 30 * 12), 12):
-        attr_id = blob[off]
-        if attr_id == 0:
-            continue
-        # Raw value is a 6-byte little-endian integer at offset+5.
-        raw = int.from_bytes(blob[off + 5:off + 11], "little")
-        attrs[attr_id] = raw
-    return attrs
+def _safe(fn: Callable, default: object, log: LogFn) -> object:
+    """Run one source; a crash in it must never take the scan down."""
+    try:
+        return fn(log)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[WARN] {fn.__module__}.{fn.__name__} failed: {exc}")
+        return default
 
 
-def _normalise_instance(name: Optional[str]) -> str:
-    return (name or "").strip().upper()
+def _inventory(log: LogFn) -> List[Dict[str, object]]:
+    """Physical drives with identity, kind, firmware, interface, Windows
+    health and the MSFT_PhysicalDisk row (reliability counters included)
+    for each."""
+    rows: Dict[int, Dict[str, object]] = {}
+    for row in reliability.fetch(log):
+        number = as_int(row.get("DeviceId"))
+        if number is not None:
+            rows[number] = row
 
-
-def _smart_entries(log: LogFn) -> Dict[str, Dict[str, object]]:
-    """Return {instance_name: {power_on_hours, host_writes_tb}}."""
-    out: Dict[str, Dict[str, object]] = {}
-    with wmi_connection("root\\wmi") as c:
-        if c is None:
-            return out
-        try:
-            for item in c.MSStorageDriver_FailurePredictData():
-                blob = bytes(item.VendorSpecific)
-                attrs = _parse_smart_blob(blob)
-                poh = attrs.get(ATTR_POWER_ON_HOURS)
-                lbaw = attrs.get(ATTR_TOTAL_LBA_WRITTEN)
-                host_tb = None
-                if lbaw:
-                    host_tb = round(lbaw * BYTES_PER_LBA / (1000 ** 4), 2)
-                out[_normalise_instance(item.InstanceName)] = {
-                    "power_on_hours": poh,
-                    "host_writes_tb": host_tb,
-                }
-        except Exception as exc:  # noqa: BLE001
-            log(f"[WARN] SMART data unavailable (elevation?): {exc}")
-    return out
-
-
-def _predict_failures(log: LogFn) -> Dict[str, bool]:
-    out: Dict[str, bool] = {}
-    with wmi_connection("root\\wmi") as c:
-        if c is None:
-            return out
-        try:
-            for item in c.MSStorageDriver_FailurePredictStatus():
-                out[_normalise_instance(item.InstanceName)] = bool(item.PredictFailure)
-        except Exception as exc:  # noqa: BLE001
-            log(f"[WARN] SMART predict-status unavailable: {exc}")
-    return out
-
-
-def _physical_health(log: LogFn) -> List[str]:
-    """MSFT_PhysicalDisk HealthStatus strings (0=Healthy,1=Warning,2=Unhealthy)."""
-    mapping = {0: "Healthy", 1: "Warning", 2: "Unhealthy"}
-    statuses: List[str] = []
-    with wmi_connection("root\\Microsoft\\Windows\\Storage") as c:
-        if c is None:
-            return statuses
-        try:
-            for disk in c.MSFT_PhysicalDisk():
-                code = getattr(disk, "HealthStatus", None)
-                statuses.append(mapping.get(int(code), "Unknown") if code is not None
-                                else "Unknown")
-        except Exception as exc:  # noqa: BLE001
-            log(f"[WARN] MSFT_PhysicalDisk unavailable: {exc}")
-    return statuses
-
-
-def _disk_models(log: LogFn) -> List[Dict[str, object]]:
     disks: List[Dict[str, object]] = []
     with wmi_connection() as c:
-        if c is None:
-            return disks
-        try:
-            for d in c.Win32_DiskDrive():
-                size_gb = None
-                if d.Size:
-                    try:
-                        size_gb = round(int(d.Size) / (1000 ** 3), 1)
-                    except Exception:  # noqa: BLE001
-                        size_gb = None
-                disks.append({
-                    "model": (d.Model or "Unknown drive").strip(),
-                    "size_gb": size_gb,
-                    "pnp": _normalise_instance(d.PNPDeviceID),
-                    "media": (d.MediaType or "").strip() or None,
-                })
-        except Exception as exc:  # noqa: BLE001
-            log(f"[WARN] Win32_DiskDrive failed: {exc}")
+        if c is not None:
+            try:
+                for d in c.Win32_DiskDrive():
+                    disks.append({
+                        "disk_number": as_int(d.Index),
+                        "model": (d.Model or "Unknown drive").strip(),
+                        "serial": (d.SerialNumber or "").strip() or None,
+                        "size_gb": size_gb(d.Size),
+                        "pnp": wmi_smart.instance_key(d.PNPDeviceID) or None,
+                        "firmware": (getattr(d, "FirmwareRevision", None)
+                                     or "").strip() or None,
+                    })
+            except Exception as exc:  # noqa: BLE001
+                log(f"[WARN] Win32_DiskDrive failed: {exc}")
+
+    listed = {d["disk_number"] for d in disks}
+    for number in sorted(rows.keys() - listed):
+        disks.append({"disk_number": number, "model": "Unknown drive",
+                      "serial": None, "size_gb": None, "pnp": None,
+                      "firmware": None})
+
+    for d in disks:
+        row = rows.get(d["disk_number"])
+        d["row"] = row
+        d["kind"] = KIND_UNKNOWN
+        d["windows_health"] = FLAG_UNKNOWN
+        d["interface"] = None
+        if row:
+            # MSFT_PhysicalDisk reports the exact size; Win32_DiskDrive
+            # rounds it down to whole cylinders.
+            d.update({k: v for k, v in reliability.identity(row).items()
+                      if v is not None})
+            d["kind"] = reliability.kind_of(row.get("MediaType"),
+                                            row.get("BusType"))
+            d["windows_health"] = reliability.health_flag(
+                row.get("HealthStatus"))
+            d["interface"] = reliability.BUS_NAMES.get(
+                as_int(row.get("BusType")))
+            d["firmware"] = (str(row.get("FirmwareVersion") or "").strip()
+                             or d["firmware"])
+    disks.sort(key=lambda d: (d["disk_number"] is None, d["disk_number"]))
     return disks
 
 
+def _identity(drive: Dict[str, object]) -> Dict[str, object]:
+    return {"serial": drive["serial"], "model": drive["model"],
+            "size_gb": drive["size_gb"],
+            "disk_number": drive["raw"].get("disk_number")}
+
+
+def _take_smartctl(disk: Dict[str, object],
+                   pending: List[Dict[str, object]]
+                   ) -> Optional[Dict[str, object]]:
+    idx = matching.find_match(disk, [_identity(p) for p in pending])
+    return pending.pop(idx) if idx is not None else None
+
+
+def _wmi_smart_drive(disk: Dict[str, object],
+                     entries: Dict[str, Dict[str, object]],
+                     only_disk: bool) -> Optional[Dict[str, object]]:
+    key = next((k for k in entries if matching.pnp_matches(disk["pnp"], k)),
+               None)
+    if key is None and only_disk and len(entries) == 1:
+        key = next(iter(entries))  # one disk, one SMART entry
+    if key is None:
+        return None
+    entry = entries[key]
+    return wmi_smart.to_drive(entry["attrs"], entry["thresholds"],
+                              entry["predict_failure"])
+
+
+def _finish(drive: Dict[str, object],
+            disk: Optional[Dict[str, object]]) -> Dict[str, object]:
+    """Fill identity gaps from the inventory."""
+    if disk is not None:
+        for field in ("model", "serial", "size_gb"):
+            if drive[field] is None:
+                drive[field] = disk[field]
+        if drive["kind"] == KIND_UNKNOWN:
+            drive["kind"] = disk["kind"]
+        if drive["health_flag"] == FLAG_UNKNOWN:
+            drive["health_flag"] = disk["windows_health"]
+        raw = drive["raw"]
+        for key in ("disk_number", "firmware", "interface"):
+            if raw.get(key) is None:
+                raw[key] = disk.get(key)
+        raw["windows_health"] = disk["windows_health"]
+        if (disk["serial"] and normalise_serial(disk["serial"])
+                != normalise_serial(drive["serial"])):
+            raw["windows_serial"] = disk["serial"]
+    return drive
+
+
+def _fmt(value: object, unit: str) -> str:
+    return f"{value}{unit}" if value is not None else "n/a"
+
+
 def collect_storage_health(log: LogFn | None = None) -> Dict[str, object]:
-    """Collect per-drive SMART health. Correlation across namespaces is
-    best-effort; a single-SSD laptop (the common case) maps cleanly."""
+    """Collect per-drive S.M.A.R.T. health, layer by layer."""
     log = log or _noop
 
     log("[DISK] Enumerating physical drives ...")
-    disks = _disk_models(log)
+    disks = _safe(_inventory, [], log)
     log(f"[DISK]   -> {len(disks)} drive(s) detected")
 
-    log("[DISK] Querying S.M.A.R.T. attribute tables ...")
-    smart = _smart_entries(log)
-    predict = _predict_failures(log)
-    phys_health = _physical_health(log)
+    log("[DISK] Reading S.M.A.R.T. via smartctl ...")
+    pending = _safe(smartctl.collect, [], log)
+    wmi_entries: Optional[Dict[str, Dict[str, object]]] = None
 
     drives: List[Dict[str, object]] = []
-    for idx, disk in enumerate(disks):
-        # Best-effort match: SMART InstanceName often contains the PNP id.
-        match_key = next(
-            (k for k in smart if disk["pnp"] and disk["pnp"][:20] in k),
-            None,
-        )
-        if match_key is None and len(smart) == 1 and len(disks) == 1:
-            match_key = next(iter(smart))  # single-drive fast path
+    for disk in disks:
+        drive = _take_smartctl(disk, pending)
+        if drive is None and disk["row"]:
+            drive = reliability.to_drive(disk["row"])
+        if drive is None and disk["pnp"]:
+            if wmi_entries is None:  # only queried when a drive needs it
+                log("[DISK] Querying ATA S.M.A.R.T. tables ...")
+                wmi_entries = _safe(wmi_smart.fetch, {}, log)
+            drive = _wmi_smart_drive(disk, wmi_entries, len(disks) == 1)
+        drives.append(_finish(drive or new_drive(), disk))
+    # Drives smartctl read but Windows didn't list.
+    drives.extend(_finish(d, None) for d in pending)
 
-        poh = host_tb = None
-        if match_key:
-            poh = smart[match_key].get("power_on_hours")
-            host_tb = smart[match_key].get("host_writes_tb")
+    for d in drives:
+        log(f"[DISK]   -> {d['model']} [{d['kind']}] via {d['source']}: "
+            f"health={d['health_flag']}, "
+            f"POH={_fmt(d['power_on_hours'], 'h')}, "
+            f"writes={_fmt(d['host_writes_tb'], 'TB')}")
 
-        predicted_fail = predict.get(match_key, None) if match_key else None
-        health = "Unknown"
-        if predicted_fail is True:
-            health = "FAILING"
-        elif predicted_fail is False:
-            health = "OK"
-        elif idx < len(phys_health):
-            health = phys_health[idx]
-
-        drive = {
-            "model": disk["model"],
-            "size_gb": disk["size_gb"],
-            "media": disk["media"],
-            "power_on_hours": poh,
-            "host_writes_tb": host_tb,
-            "health": health,
-        }
-        drives.append(drive)
-        log(f"[DISK]   -> {disk['model']}: health={health}, "
-            f"POH={poh if poh is not None else 'n/a'}h, "
-            f"writes={host_tb if host_tb is not None else 'n/a'}TB")
-
-    smart_readable = bool(smart)
+    smart_readable = any(d["source"] != SOURCE_NONE for d in drives)
     if not smart_readable:
-        log("[DISK] NOTE: SMART attributes not readable "
-            "(run elevated for power-on hours / host writes).")
+        log("[DISK] NOTE: SMART data not readable "
+            "(run elevated for power-on hours / wear / errors).")
 
     return {"drives": drives, "smart_readable": smart_readable}

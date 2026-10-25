@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import psutil
 
@@ -132,14 +132,20 @@ def collect_battery_health(log: LogFn | None = None) -> Dict[str, object]:
                 data[k] = v
 
     design, full, cycles = data["design_mwh"], data["full_mwh"], data["cycles"]
-    present = bool(design) and bool(full)
+    capacity_known = bool(design) and bool(full)
+    # The OS can see a battery whose firmware won't report capacities: that
+    # is a battery we couldn't assess, not a desktop.
+    present = capacity_known or _battery_reading() is not None
 
     wear_pct = None
-    if present and design:
+    if capacity_known:
         wear_pct = round(max(0.0, (1 - full / design)) * 100, 1)
 
     if not present:
         log("[BATT]   -> No battery detected (desktop?) — excluded from score.")
+    elif not capacity_known:
+        log("[BATT]   -> Battery detected, but the firmware did not report "
+            "its capacity (wear unknown).")
     else:
         log(f"[BATT]   -> design={design} mWh, full-charge={full} mWh, "
             f"wear={wear_pct}%, cycles={cycles if cycles is not None else 'n/a'}")
@@ -175,25 +181,54 @@ def _secs_left(batt) -> Optional[int]:
     return None
 
 
+def _discharge_rate_mw(conn) -> Optional[int]:
+    """Total draw (mW) reported by ACPI ``BatteryStatus``, or None.
+
+    Firmware reports 0 while charging and for a few seconds after the
+    charger is pulled, so only positive readings taken while discharging
+    count. Laptops with two packs report one instance each.
+    """
+    if conn is None:
+        return None
+    total = 0
+    try:
+        for s in conn.BatteryStatus():
+            rate = int(s.DischargeRate or 0)
+            if s.Discharging and rate > 0:
+                total += rate
+    except Exception:  # noqa: BLE001
+        return None
+    return total or None
+
+
 def run_discharge_test(
     full_mwh: Optional[int] = None,
     log: LogFn | None = None,
     on_sample: DischargeSampleFn | None = None,
     should_stop: StopFn | None = None,
 ) -> Dict[str, object]:
-    """Time how long the battery takes to drop by one percent on mains-free power.
+    """Measure the battery's power draw with the charger unplugged.
 
     The laptop must be running **off the battery**: while AC is still
     connected we sit in a ``wait`` phase (the UI prompts the operator to
-    pull the power cord) until ``power_plugged`` goes false. We then record
-    the starting charge and clock the wall-time for a
-    ``BATTERY_DISCHARGE_DROP_PCT`` drop, averaging CPU load across the
-    window so the drain can be read in the context of the load that caused
-    it. If the drop has not happened by ``BATTERY_DISCHARGE_TIMEOUT_S`` we
-    fall back to psutil's own ``secsleft`` estimate.
+    pull the power cord) until ``power_plugged`` goes false. The draw then
+    comes from the first of these that succeeds (``result["method"]``):
 
-    ``on_sample(phase, percent, cpu_pct, elapsed_s)`` feeds the live UI;
-    ``should_stop()`` lets the operator cancel.
+    1. ``rate`` — average the firmware's own ``BatteryStatus.DischargeRate``
+       over ``BATTERY_RATE_WINDOW_S``. Direct, and needs no percent tick.
+    2. ``percent`` — time a whole ``BATTERY_DISCHARGE_DROP_PCT`` step.
+       Windows reports whole percents and at unplug time the charge sits
+       somewhere *inside* the current percent, so timing from the unplug
+       would catch a fraction of a percent and overstate the draw. The
+       clock therefore starts at the first observed drop and stops at the
+       next one.
+    3. ``estimate`` — if neither completes by
+       ``BATTERY_DISCHARGE_TIMEOUT_S``, fall back to psutil's ``secsleft``.
+
+    CPU load is averaged across the window so the draw can be read in the
+    context of the load behind it. ``on_sample(phase, percent, cpu_pct,
+    elapsed_s)`` feeds the live UI; ``should_stop()`` lets the operator
+    cancel.
     """
     log = log or _noop
     on_sample = on_sample or (lambda *_: None)
@@ -201,8 +236,9 @@ def run_discharge_test(
 
     result: Dict[str, object] = {
         "ran": False,
-        "measured": False,       # True => a real 1% drop was timed
+        "measured": False,       # True => firmware rate or a full step timed
         "estimated": False,      # True => value came from psutil secsleft
+        "method": None,          # "rate" | "percent" | "estimate"
         "drop_pct": config.BATTERY_DISCHARGE_DROP_PCT,
         "seconds_per_pct": None,
         "avg_cpu_pct": None,
@@ -235,62 +271,93 @@ def run_discharge_test(
         result["reason"] = "Battery sensor disappeared."
         return result
 
-    # ── Phase 2: time the 1% drop ────────────────────────────────────
+    # ── Phase 2: measure the draw ────────────────────────────────────
     result["ran"] = True
     start_pct = int(batt.percent)
-    target = start_pct - config.BATTERY_DISCHARGE_DROP_PCT
     result["start_pct"] = start_pct
-    log(f"[DRAIN] Running on battery at {start_pct}% — timing the drop to "
-        f"{target}% (giving up after {config.BATTERY_DISCHARGE_TIMEOUT_S}s).")
+    log(f"[DRAIN] Running on battery at {start_pct}% — measuring the draw "
+        f"(giving up after {config.BATTERY_DISCHARGE_TIMEOUT_S}s).")
 
+    rate_samples_needed = max(1, int(config.BATTERY_RATE_WINDOW_S
+                                     * config.BATTERY_DISCHARGE_SAMPLE_HZ))
     start = time.monotonic()
-    cpu_samples = []
+    cpu_samples: List[float] = []
+    rates: List[int] = []
+    step_start: Optional[float] = None   # elapsed time of the first drop
+    step_pct: Optional[int] = None
     last_secs_left = _secs_left(batt)
     cur_pct = start_pct
 
-    while True:
-        elapsed = time.monotonic() - start
-        cur_pct = int(batt.percent)
+    with wmi_connection("root\\wmi") as conn:
+        while True:
+            elapsed = time.monotonic() - start
+            cur_pct = int(batt.percent)
 
-        # AC came back mid-test: the measurement is void.
-        if batt.power_plugged:
-            log("[DRAIN] AC reconnected mid-test — discharge reading voided.")
-            result["reason"] = "Power was reconnected during the test."
-            result["end_pct"] = cur_pct
-            return result
+            # AC came back mid-test: the measurement is void.
+            if batt.power_plugged:
+                log("[DRAIN] AC reconnected mid-test — discharge reading voided.")
+                result["reason"] = "Power was reconnected during the test."
+                result["end_pct"] = cur_pct
+                return result
 
-        cpu = psutil.cpu_percent(interval=None)
-        cpu_samples.append(cpu)
-        on_sample("drain", cur_pct, cpu, round(elapsed, 1))
+            cpu = psutil.cpu_percent(interval=None)
+            cpu_samples.append(cpu)
+            on_sample("drain", cur_pct, cpu, round(elapsed, 1))
+            out_of_time = (elapsed >= config.BATTERY_DISCHARGE_TIMEOUT_S
+                           or should_stop())
 
-        if cur_pct <= target:
-            result["measured"] = True
-            result["seconds_per_pct"] = round(
-                elapsed / config.BATTERY_DISCHARGE_DROP_PCT, 1)
-            log(f"[DRAIN] Dropped to {cur_pct}% after {elapsed:.0f}s.")
-            break
+            rate = _discharge_rate_mw(conn)
+            if rate:
+                rates.append(rate)
+            if len(rates) >= rate_samples_needed or (out_of_time and rates):
+                avg_mw = sum(rates) / len(rates)
+                result["measured"] = True
+                result["method"] = "rate"
+                result["drain_w"] = round(avg_mw / 1000, 1)
+                if full_mwh:
+                    # 1% of the pack is full_mwh/100 mWh, drawn at avg_mw.
+                    result["seconds_per_pct"] = round(full_mwh * 36 / avg_mw, 1)
+                log(f"[DRAIN] Battery reports {avg_mw / 1000:.1f} W average "
+                    f"draw over {len(rates)} sample(s).")
+                break
 
-        if elapsed >= config.BATTERY_DISCHARGE_TIMEOUT_S or should_stop():
-            # Couldn't observe a full 1% in time — integer percent gives us
-            # nothing to interpolate, so fall back to psutil's estimate.
-            sl = _secs_left(batt) or last_secs_left
-            if sl and cur_pct > 0:
-                result["estimated"] = True
-                result["seconds_per_pct"] = round(sl / cur_pct, 1)
-                log(f"[DRAIN] No full 1% drop in {elapsed:.0f}s; using system "
-                    f"estimate (~{result['seconds_per_pct']:.0f}s/1%).")
-            else:
-                result["reason"] = ("Battery drained too slowly to measure, "
-                                    "and no system estimate was available.")
-                log("[DRAIN] Could not measure or estimate discharge rate.")
-            break
+            if step_start is None:
+                if cur_pct < start_pct:
+                    step_start, step_pct = elapsed, cur_pct
+                    log(f"[DRAIN] First drop to {cur_pct}% — timing the next "
+                        f"full {config.BATTERY_DISCHARGE_DROP_PCT}% ...")
+            elif cur_pct <= step_pct - config.BATTERY_DISCHARGE_DROP_PCT:
+                result["measured"] = True
+                result["method"] = "percent"
+                result["seconds_per_pct"] = round(
+                    (elapsed - step_start) / (step_pct - cur_pct), 1)
+                log(f"[DRAIN] {step_pct}% -> {cur_pct}% took "
+                    f"{elapsed - step_start:.0f}s.")
+                break
 
-        last_secs_left = _secs_left(batt) or last_secs_left
-        time.sleep(interval)
-        batt = _battery_reading()
-        if batt is None:
-            result["reason"] = "Battery sensor disappeared mid-test."
-            return result
+            if out_of_time:
+                # No full step in time — integer percent gives us nothing to
+                # interpolate, so fall back to psutil's estimate.
+                sl = _secs_left(batt) or last_secs_left
+                if sl and cur_pct > 0:
+                    result["estimated"] = True
+                    result["method"] = "estimate"
+                    result["seconds_per_pct"] = round(sl / cur_pct, 1)
+                    log(f"[DRAIN] No full 1% step in {elapsed:.0f}s; using "
+                        f"system estimate "
+                        f"(~{result['seconds_per_pct']:.0f}s/1%).")
+                else:
+                    result["reason"] = ("Battery drained too slowly to measure, "
+                                        "and no system estimate was available.")
+                    log("[DRAIN] Could not measure or estimate discharge rate.")
+                break
+
+            last_secs_left = _secs_left(batt) or last_secs_left
+            time.sleep(interval)
+            batt = _battery_reading()
+            if batt is None:
+                result["reason"] = "Battery sensor disappeared mid-test."
+                return result
 
     result["end_pct"] = cur_pct
     if cpu_samples:
@@ -298,14 +365,15 @@ def run_discharge_test(
 
     # Derived average power draw, if we know the pack's full-charge energy.
     spp = result["seconds_per_pct"]
-    if full_mwh and spp:
+    if result["drain_w"] is None and full_mwh and spp:
         # 1% of the pack is full_mwh/100 mWh, delivered over `spp` seconds.
         #   P(W) = energy(mWh) / time(h) / 1000 = full_mwh * 0.036 / spp
         result["drain_w"] = round(full_mwh * 0.036 / spp, 1)
 
-    if result["avg_cpu_pct"] is not None and spp:
+    if result["avg_cpu_pct"] is not None and result["method"]:
         drain = (f"{result['drain_w']} W" if result["drain_w"]
                  else "n/a (capacity unknown)")
-        log(f"[DRAIN]   -> {spp:.0f}s per 1% at {result['avg_cpu_pct']:.0f}% "
-            f"avg CPU load  (~{drain})")
+        per_pct = f"{spp:.0f}s per 1%, " if spp else ""
+        log(f"[DRAIN]   -> {per_pct}~{drain} at {result['avg_cpu_pct']:.0f}% "
+            f"avg CPU load ({result['method']})")
     return result

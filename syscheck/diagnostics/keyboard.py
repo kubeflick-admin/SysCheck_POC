@@ -15,7 +15,8 @@ Key = Tuple[str, float]
 
 # A pragmatic laptop layout. Labels must be unique (they are the keys the
 # view lights up). Modifier/space keys are included so a full finger-swipe
-# can register them.
+# can register them. Fn is left out: the keyboard firmware handles it and
+# it never reaches the OS, so it could never light up.
 KEYBOARD_ROWS: List[List[Key]] = [
     [("Esc", 1.0), ("F1", 1.0), ("F2", 1.0), ("F3", 1.0), ("F4", 1.0),
      ("F5", 1.0), ("F6", 1.0), ("F7", 1.0), ("F8", 1.0), ("F9", 1.0),
@@ -32,8 +33,9 @@ KEYBOARD_ROWS: List[List[Key]] = [
     [("Shift", 2.25), ("Z", 1.0), ("X", 1.0), ("C", 1.0), ("V", 1.0),
      ("B", 1.0), ("N", 1.0), ("M", 1.0), (",", 1.0), (".", 1.0), ("/", 1.0),
      ("RShift", 2.75)],
-    [("Ctrl", 1.5), ("Win", 1.25), ("Alt", 1.25), ("Space", 6.0),
-     ("RAlt", 1.25), ("Fn", 1.25), ("RCtrl", 1.5)],
+    [("Ctrl", 1.5), ("Win", 1.25), ("Alt", 1.25), ("Space", 5.0),
+     ("RAlt", 1.25), ("RCtrl", 1.25), ("←", 1.0), ("↑", 1.0), ("↓", 1.0),
+     ("→", 1.0)],
 ]
 
 

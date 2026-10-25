@@ -7,19 +7,18 @@ from __future__ import annotations
 
 from typing import Dict
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QStackedWidget)
 
 from .. import config
 from .widgets import TelemetryConsole, IndicatorLight
-from .views import (SplashView, TelemetryView, BatteryView, ThermalView,
-                    CameraView, KeyboardView, TouchpadView, PortsView,
-                    ResultsView)
+from .views import (SplashView, TelemetryView, StorageView, BatteryView,
+                    ThermalView, CameraView, KeyboardView, TouchpadView,
+                    PortsView, PerformanceView, ResultsView)
 from .views._common import StepHeader, panel, label
 
-_STEPS = ["Telemetry", "Battery", "Thermal", "Webcam", "Keyboard",
-          "Touchpad", "Ports", "Verdict"]
+_STEPS = ["Telemetry", "Storage", "Battery", "Thermal", "Webcam", "Keyboard",
+          "Touchpad", "Ports", "Performance", "Verdict"]
 
 
 class MainWindow(QMainWindow):
@@ -52,16 +51,18 @@ class MainWindow(QMainWindow):
         # ── Views ────────────────────────────────────────────────────
         self._splash = SplashView()
         self._telemetry = TelemetryView()
+        self._storage = StorageView()
         self._battery = BatteryView()
         self._thermal = ThermalView()
         self._camera = CameraView()
         self._keyboard = KeyboardView()
         self._touchpad = TouchpadView()
         self._ports = PortsView()
+        self._performance = PerformanceView()
         self._results_view = ResultsView()
-        for v in (self._splash, self._telemetry, self._battery, self._thermal,
-                  self._camera, self._keyboard, self._touchpad, self._ports,
-                  self._results_view):
+        for v in (self._splash, self._telemetry, self._storage, self._battery,
+                  self._thermal, self._camera, self._keyboard, self._touchpad,
+                  self._ports, self._performance, self._results_view):
             self._stack.addWidget(v)
 
         self._wire()
@@ -95,7 +96,8 @@ class MainWindow(QMainWindow):
                           ("camera", "Webcam clarity"),
                           ("keyboard", "Keyboard continuity"),
                           ("touchpad", "Touchpad continuity"),
-                          ("ports", "Ports / peripherals")):
+                          ("ports", "Ports / peripherals"),
+                          ("performance", "Performance / hangs")):
             light = IndicatorLight(text)
             self._lights[key] = light
             sp.addWidget(light)
@@ -108,7 +110,7 @@ class MainWindow(QMainWindow):
 
         for view in (self._telemetry, self._battery, self._thermal,
                      self._camera, self._keyboard, self._touchpad,
-                     self._ports):
+                     self._ports, self._performance):
             view.log.connect(self._console.log)
             view.status.connect(self._set_status)
 
@@ -116,45 +118,60 @@ class MainWindow(QMainWindow):
             lambda d: self._results.update({"specs": d.get("specs"),
                                             "storage": d.get("storage"),
                                             "battery": d.get("battery")}))
-        self._telemetry.next_requested.connect(self._enter_battery)
+        self._telemetry.next_requested.connect(self._enter_storage)
+        self._storage.next_requested.connect(self._enter_battery)
 
         # The discharge test augments the wear data gathered in telemetry.
         self._battery.finished.connect(self._merge_battery)
         self._battery.next_requested.connect(
-            lambda: self._advance(self._thermal, 2))
+            lambda: self._advance(self._thermal, 3))
 
         self._thermal.finished.connect(
             lambda d: self._results.__setitem__("thermal", d))
         self._thermal.next_requested.connect(
-            lambda: self._advance(self._camera, 3))
+            lambda: self._advance(self._camera, 4))
 
         self._camera.finished.connect(
             lambda d: self._results.__setitem__("camera", d))
         self._camera.next_requested.connect(
-            lambda: self._advance(self._keyboard, 4))
+            lambda: self._advance(self._keyboard, 5))
 
         self._keyboard.finished.connect(
             lambda d: self._results.__setitem__("keyboard", d))
         self._keyboard.next_requested.connect(
-            lambda: self._advance(self._touchpad, 5))
+            lambda: self._advance(self._touchpad, 6))
 
         self._touchpad.finished.connect(
             lambda d: self._results.__setitem__("touchpad", d))
         self._touchpad.next_requested.connect(
-            lambda: self._advance(self._ports, 6))
+            lambda: self._advance(self._ports, 7))
 
         self._ports.finished.connect(
             lambda d: self._results.__setitem__("ports", d))
-        self._ports.next_requested.connect(self._show_results)
+        self._ports.next_requested.connect(self._enter_performance)
+
+        self._performance.finished.connect(
+            lambda d: self._results.__setitem__("performance", d))
+        self._performance.next_requested.connect(self._show_results)
 
         self._results_view.restart_requested.connect(self._reset_flow)
+        self._results_view.log.connect(self._console.log)
+
+    def _enter_storage(self) -> None:
+        self._storage.set_storage(self._results.get("storage"))
+        self._advance(self._storage, 1)
 
     def _enter_battery(self) -> None:
-        # Hand the pack's full-charge energy to the discharge test so it can
-        # convert the 1%-drop time into an average draw in watts.
-        batt = self._results.get("battery") or {}
-        self._battery.set_full_mwh(batt.get("full_mwh"))
-        self._advance(self._battery, 1)
+        # Hand the telemetry battery data to the discharge step: full-charge
+        # energy converts a 1%-drop time into watts, and wear feeds its light.
+        self._battery.set_battery(self._results.get("battery"))
+        self._advance(self._battery, 2)
+
+    def _enter_performance(self) -> None:
+        # The hang causes link to drive health and thermal throttling, and
+        # the use guide needs the graphics card.
+        self._performance.set_context(self._results)
+        self._advance(self._performance, 8)
 
     def _merge_battery(self, discharge: dict) -> None:
         batt = self._results.get("battery")
@@ -197,9 +214,12 @@ class MainWindow(QMainWindow):
 
     # ── graceful shutdown ─────────────────────────────────────────────
     def closeEvent(self, event) -> None:  # noqa: N802
-        # Make sure no worker thread outlives the window.
+        # Make sure no worker thread outlives the window: a QThread destroyed
+        # while still running aborts the whole process.
         for stop in (self._camera.stop_camera, self._battery.stop_worker,
-                     self._ports.stop_worker):
+                     self._ports.stop_worker, self._thermal.stop_worker,
+                     self._telemetry.stop_worker,
+                     self._performance.stop_worker):
             try:
                 stop()
             except Exception:  # noqa: BLE001

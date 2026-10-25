@@ -1,0 +1,103 @@
+# Builds dist\SysCheck.exe on Windows with build.ps1 and uploads it as a
+# downloadable artifact, together with the licence and source note for the
+# bundled smartctl.exe (smartmontools, GPL).
+name: Build Windows exe
+
+on:
+  push:
+    branches: [master, "feature/**"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: SysCheck.exe (Windows, Python 3.12)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # PyInstaller version as noted at the bottom of requirements.txt.
+      - name: Install dependencies and PyInstaller
+        run: python -m pip install -r requirements.txt pyinstaller==6.10.0
+
+      - name: Verify smartctl.exe matches SOURCE.txt
+        run: |
+          $source = Get-Content vendor\smartmontools\SOURCE.txt -Raw
+          if ($source -notmatch 'SHA-256:\s+([0-9a-f]{64})') {
+            throw "No SHA-256 line in vendor\smartmontools\SOURCE.txt"
+          }
+          $expected = $Matches[1]
+          $actual = (Get-FileHash vendor\smartmontools\smartctl.exe -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "smartctl.exe SHA-256 $actual does not match SOURCE.txt ($expected)"
+          }
+          Write-Host "smartctl.exe SHA-256 OK: $actual"
+
+      - name: Build SysCheck.exe
+        run: .\build.ps1
+
+      - name: Check smartctl.exe is bundled unmodified
+        shell: python
+        run: |
+          import hashlib
+          import re
+          import sys
+          from pathlib import Path
+
+          from PyInstaller.archive.readers import CArchiveReader
+
+          exe = Path("dist/SysCheck.exe")
+          source = Path("vendor/smartmontools/SOURCE.txt").read_text()
+          expected = re.search(r"SHA-256:\s+([0-9a-f]{64})", source).group(1)
+
+          archive = CArchiveReader(str(exe))
+          names = {name.replace("\\", "/"): name for name in archive.toc}
+          wanted = [f"vendor/smartmontools/{f}"
+                    for f in ("smartctl.exe", "COPYING.txt", "SOURCE.txt")]
+          missing = [w for w in wanted if w not in names]
+          if missing:
+              sys.exit(f"Not bundled in {exe}: {', '.join(missing)}")
+
+          data = archive.extract(names["vendor/smartmontools/smartctl.exe"])
+          digest = hashlib.sha256(data).hexdigest()
+          if digest != expected:
+              sys.exit(f"Bundled smartctl.exe SHA-256 {digest} != {expected}")
+          size_mb = exe.stat().st_size / 1e6
+          print(f"{exe} ({size_mb:.0f} MB) bundles smartctl.exe "
+                f"(SHA-256 {digest}), COPYING.txt and SOURCE.txt")
+
+      - name: Stage artifact
+        run: |
+          New-Item -ItemType Directory -Path artifact | Out-Null
+          Copy-Item dist\SysCheck.exe artifact\
+          Copy-Item vendor\smartmontools\COPYING.txt artifact\smartmontools-COPYING.txt
+          Copy-Item vendor\smartmontools\SOURCE.txt artifact\smartmontools-SOURCE.txt
+
+      - name: Upload SysCheck.exe
+        uses: actions/upload-artifact@v7
+        with:
+          name: SysCheck-exe
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 14

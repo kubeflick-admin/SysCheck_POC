@@ -1,6 +1,6 @@
 """Reusable HUD widgets: progress ring, telemetry console, indicator light,
-and a live line graph. All are custom-painted to get the neon look that a
-stock Qt widget can't provide.
+a live line graph and a drive health bar. All are custom-painted to get
+the neon look that a stock Qt widget can't provide.
 """
 
 from __future__ import annotations
@@ -224,7 +224,9 @@ class LineGraph(QWidget):
             p.setPen(QPen(QColor(config.COL_RED), 1, Qt.DashLine))
             p.drawLine(pad, int(ty), w - pad, int(ty))
             p.setPen(QColor(config.COL_RED))
-            f = QFont(config.MONO_FONT); f.setPointSize(8); p.setFont(f)
+            f = QFont(config.MONO_FONT)
+            f.setPointSize(8)
+            p.setFont(f)
             p.drawText(w - pad - 70, int(ty) - 4, f"{self._threshold:.0f} CRIT")
 
         # Data polyline
@@ -240,10 +242,69 @@ class LineGraph(QWidget):
             # Current value readout
             last = self._data[-1]
             p.setPen(QColor(config.COL_GREEN))
-            f = QFont(config.MONO_FONT); f.setPointSize(11); f.setBold(True)
+            f = QFont(config.MONO_FONT)
+            f.setPointSize(11)
+            f.setBold(True)
             p.setFont(f)
             p.drawText(pad + 2, pad + 14, f"{last:.1f}")
         else:
             p.setPen(QColor(config.COL_TEXT_DIM))
             p.drawText(self.rect(), Qt.AlignCenter, "awaiting sensor data …")
+        p.end()
+
+
+# ─────────────────────────────────────────────────────────────────────
+class HealthBar(QWidget):
+    """A wide segmented bar for a 0–100 drive Health %, with the figure
+    printed at its right end. ``None`` draws an empty bar and "N/A"."""
+
+    SEGMENTS = 25
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._value: Optional[float] = None
+        self._color = QColor(config.COL_TEXT_DIM)
+        self.setMinimumSize(240, 44)
+
+    def value(self) -> Optional[float]:
+        return self._value
+
+    def set_value(self, value: Optional[float], hex_color: str) -> None:
+        self._value = (None if value is None
+                       else max(0.0, min(100.0, float(value))))
+        self._color = QColor(hex_color)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h, pad, gap, text_w = self.width(), self.height(), 6, 3, 100
+
+        p.fillRect(self.rect(), QColor("#070808"))
+        p.setPen(QPen(QColor(config.COL_GRID), 1))
+        p.drawRect(0, 0, w - 1, h - 1)
+
+        # Segments: lit up to the value, the rest a faint ghost of the colour.
+        lit = 0
+        if self._value is not None:
+            lit = round(self._value / 100 * self.SEGMENTS)
+            lit = max(lit, 1) if self._value > 0 else 0
+        ghost = QColor(self._color if self._value is not None
+                       else config.COL_GRID)
+        ghost.setAlphaF(0.15 if self._value is not None else 0.6)
+        seg_w = (w - text_w - 2 * pad - gap * (self.SEGMENTS - 1)) / self.SEGMENTS
+        for i in range(self.SEGMENTS):
+            x = pad + i * (seg_w + gap)
+            p.fillRect(QRectF(x, pad, seg_w, h - 2 * pad),
+                       self._color if i < lit else ghost)
+
+        f = QFont(config.MONO_FONT)
+        f.setPointSize(18)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(self._color if self._value is not None
+                 else QColor(config.COL_TEXT_DIM))
+        text = "N/A" if self._value is None else f"{self._value:.0f}%"
+        p.drawText(QRectF(w - text_w, 0, text_w - pad - 4, h),
+                   Qt.AlignVCenter | Qt.AlignRight, text)
         p.end()

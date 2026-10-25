@@ -9,7 +9,7 @@ objects directly.
 from __future__ import annotations
 
 import time
-from typing import Dict, Optional
+from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
@@ -18,6 +18,7 @@ from .. import config
 from ..telemetry import (collect_core_specs, collect_storage_health,
                          collect_battery_health, run_discharge_test,
                          list_usb_devices, list_display_outputs)
+from ..telemetry.performance import run_performance_check
 from ..telemetry.thermal import run_thermal_stress
 from ..diagnostics.camera import laplacian_variance
 
@@ -31,6 +32,14 @@ class TelemetryWorker(QThread):
     component_done = Signal(str, dict)     # (name, data)
     finished_all = Signal(dict)            # full results dict
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancel = False
+
+    def cancel(self) -> None:
+        """Stop after the current stage (a WMI call can't be interrupted)."""
+        self._cancel = True
+
     def run(self) -> None:  # noqa: D401
         results: dict = {}
         stages = [
@@ -39,6 +48,8 @@ class TelemetryWorker(QThread):
             ("battery", "BATTERY ACPI", collect_battery_health),
         ]
         for i, (key, title, fn) in enumerate(stages):
+            if self._cancel:
+                return
             self.log.emit(f"==== MODULE :: {title} ====")
             try:
                 data = fn(self.log.emit)
@@ -80,6 +91,36 @@ class ThermalWorker(QThread):
             should_stop=lambda: self._cancel,
         )
         self.finished_thermal.emit(result)
+
+
+# ─────────────────────────────────────────────────────────────────────
+class PerformanceWorker(QThread):
+    """Runs the performance & hang check, stage by stage."""
+
+    log = Signal(str)
+    stage = Signal(str, str)              # stage key, title
+    sample = Signal(str, dict)            # stage key, live readings
+    progress = Signal(int)                # 0–100 across every stage
+    finished_perf = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancel = False
+
+    def cancel(self) -> None:
+        """Stop at the next check (every stage looks often)."""
+        self._cancel = True
+
+    def run(self) -> None:  # noqa: D401
+        self.log.emit("==== MODULE :: PERFORMANCE & HANGS ====")
+        result = run_performance_check(
+            log=self.log.emit,
+            on_stage=self.stage.emit,
+            on_sample=self.sample.emit,
+            on_progress=lambda pct: self.progress.emit(int(pct)),
+            should_stop=lambda: self._cancel,
+        )
+        self.finished_perf.emit(result)
 
 
 # ─────────────────────────────────────────────────────────────────────

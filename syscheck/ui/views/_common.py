@@ -1,4 +1,5 @@
-"""Shared view helpers: panel frames, titled labels, a step header strip."""
+"""Shared view helpers: panel frames, titled labels, a step header strip,
+and the scoring-status -> indicator-light mapping."""
 
 from __future__ import annotations
 
@@ -9,6 +10,25 @@ from PySide6.QtWidgets import (QFrame, QLabel, QVBoxLayout, QHBoxLayout,
                                QWidget, QSizePolicy)
 
 from ... import config
+from ...scoring import _band_from_status
+
+# ComponentScore.status -> IndicatorLight state. "Couldn't verify" is amber.
+_LIGHT_STATE = {"pass": "pass", "warn": "warn", "fail": "fail",
+                "inconclusive": "warn", "skip": "idle"}
+_BAND_COLOR = {"pass": config.COL_GREEN, "warn": config.COL_AMBER,
+               "fail": config.COL_RED}
+
+
+def light_state(status: str) -> str:
+    """Indicator-light state for a :mod:`syscheck.scoring` status."""
+    return _LIGHT_STATE.get(status, "idle")
+
+
+def health_color(pct: Optional[float]) -> str:
+    """Colour for a drive Health %, on the same bands as the score."""
+    if pct is None:
+        return config.COL_TEXT_DIM
+    return _BAND_COLOR[_band_from_status(pct)]
 
 
 def panel(accent: bool = False) -> QFrame:
@@ -41,19 +61,20 @@ class StepHeader(QWidget):
         super().__init__(parent)
         self._steps = steps
         self._current = 0
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Preferred height so a wrapped crumb line gets its room.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self._index = label("", "h2")
         self._title = label("", "h1")
         self._crumbs = label("", "dim")
+        self._crumbs.setWordWrap(True)      # wraps between steps if narrow
         col = QVBoxLayout()
         col.setSpacing(2)
         col.addWidget(self._title)
         col.addWidget(self._crumbs)
-        root.addLayout(col)
-        root.addStretch(1)
+        root.addLayout(col, 1)
         root.addWidget(self._index, 0, Qt.AlignTop)
         self.set_step(0)
 
@@ -63,7 +84,7 @@ class StepHeader(QWidget):
         self._index.setText(f">> {self._current + 1:02d} / {total:02d}")
         self._title.setText(self._steps[self._current].upper())
         crumbs = "   ".join(
-            (f"● {s}" if i == self._current else f"○ {s}")
+            (f"●\u00a0{s}" if i == self._current else f"○\u00a0{s}")
             for i, s in enumerate(self._steps)
         )
         self._crumbs.setText(crumbs)

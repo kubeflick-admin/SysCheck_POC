@@ -14,9 +14,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton, QWidget)
 
 from ... import config
+from ...scoring import score_ports
 from ...workers import PortsWorker
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 
 class PortsView(QWidget):
@@ -161,8 +162,7 @@ class PortsView(QWidget):
             "verified": verified,
             "displays": self._displays,
         }
-        state = "pass" if verified else "warn"
-        self.status.emit("ports", state)
+        self.status.emit("ports", light_state(score_ports(self._result).status))
         self.log.emit(f"[PORT] {self._added} connect(s) / {self._removed} "
                       f"disconnect(s) observed.")
         self.finished.emit(self._result)

@@ -3,7 +3,8 @@
 Renders a laptop keyboard, installs an application-level key event filter,
 and lights each cap green as its key is actuated. Keys left dark are
 flagged so the user can re-press them to tell a dead key from a missed
-swipe.
+swipe. While the test runs the filter swallows every key event, so a
+swipe can't press a button (Space) or move focus (Tab).
 """
 
 from __future__ import annotations
@@ -16,8 +17,9 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton, QWidget,
 
 from ... import config
 from ...diagnostics.keyboard import KEYBOARD_ROWS, KeyboardState
+from ...scoring import score_keyboard
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import label, light_state, panel
 
 
 # Qt special-key -> layout label. Printable keys resolve via event.text().
@@ -28,10 +30,16 @@ _SPECIAL = {
     Qt.Key_F1: "F1", Qt.Key_F2: "F2", Qt.Key_F3: "F3", Qt.Key_F4: "F4",
     Qt.Key_F5: "F5", Qt.Key_F6: "F6", Qt.Key_F7: "F7", Qt.Key_F8: "F8",
     Qt.Key_F9: "F9", Qt.Key_F10: "F10", Qt.Key_F11: "F11", Qt.Key_F12: "F12",
+    Qt.Key_Left: "←", Qt.Key_Up: "↑", Qt.Key_Down: "↓", Qt.Key_Right: "→",
 }
 
-# Windows scan codes that let us tell the right-hand modifiers apart.
+# Windows scan codes that let us tell the right-hand modifiers apart. Qt
+# reports the extended-key flag as bit 8, so RCtrl/RAlt are 0x1D/0x38 | 0x100.
 _RIGHT_SHIFT_SCAN = 54
+_RIGHT_CTRL_SCAN = 0x11D
+_RIGHT_ALT_SCAN = 0x138
+
+_KEY_EVENTS = (QEvent.KeyPress, QEvent.KeyRelease)
 
 
 class KeyCap(QLabel):
@@ -85,7 +93,10 @@ class KeyboardView(QWidget):
         root.addWidget(label("KEYBOARD CONTINUITY TEST", "h2"))
         root.addWidget(label("Swipe your fingers across every row of keys. "
                              "Each key turns green as it registers. Re-press "
-                             "any that stay dark.", "dim"))
+                             "any that stay dark. If the F-keys change "
+                             "brightness or volume, hold Fn while pressing "
+                             "them. The Windows key opens Start — press it "
+                             "again to come back.", "dim"))
 
         head = QHBoxLayout()
         self._ring = CircularProgress(diameter=120)
@@ -121,6 +132,9 @@ class KeyboardView(QWidget):
         self._finish_btn.clicked.connect(self._finish)
         btn_row.addWidget(self._finish_btn)
         root.addLayout(btn_row)
+        # Mouse-only, so no key can ever activate them mid-test.
+        for btn in (self._skip_btn, self._finish_btn):
+            btn.setFocusPolicy(Qt.NoFocus)
 
     # ── lifecycle ─────────────────────────────────────────────────────
     def start(self) -> None:
@@ -133,7 +147,6 @@ class KeyboardView(QWidget):
         if not self._active:
             QApplication.instance().installEventFilter(self)
             self._active = True
-        self.setFocus()
 
     def _teardown(self) -> None:
         if self._active:
@@ -142,17 +155,18 @@ class KeyboardView(QWidget):
 
     # ── global key capture ────────────────────────────────────────────
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        if self._active and event.type() == QEvent.KeyPress:
-            if not event.isAutoRepeat():
-                lbl = self._label_for(event)
-                if lbl and self._state.press(lbl):
-                    cap = self._caps.get(lbl)
-                    if cap:
-                        cap.light()
-                    self._update_prompt()
-                    if self._state.all_done():
-                        self.log.emit("[KEY] All keys registered.")
-        return super().eventFilter(obj, event)
+        if not self._active or event.type() not in _KEY_EVENTS:
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+            lbl = self._label_for(event)
+            if lbl and self._state.press(lbl):
+                cap = self._caps.get(lbl)
+                if cap:
+                    cap.light()
+                self._update_prompt()
+                if self._state.all_done():
+                    self.log.emit("[KEY] All keys registered.")
+        return True   # swallow: the test owns the keyboard while it runs
 
     def _label_for(self, event) -> Optional[str]:
         key = event.key()
@@ -161,9 +175,13 @@ class KeyboardView(QWidget):
             return "RShift" if event.nativeScanCode() == _RIGHT_SHIFT_SCAN \
                 else "Shift"
         if key == Qt.Key_Control:
-            return "Ctrl"
+            return "RCtrl" if event.nativeScanCode() == _RIGHT_CTRL_SCAN \
+                else "Ctrl"
+        if key == Qt.Key_AltGr:
+            return "RAlt"
         if key == Qt.Key_Alt:
-            return "Alt"
+            return "RAlt" if event.nativeScanCode() == _RIGHT_ALT_SCAN \
+                else "Alt"
         if key in _SPECIAL:
             return _SPECIAL[key]
         text = event.text().upper().strip()
@@ -192,8 +210,7 @@ class KeyboardView(QWidget):
         summary = self._state.summary()
         self._result = summary
         cov = summary["coverage_pct"]
-        state = "pass" if cov >= 100 else ("warn" if cov >= 90 else "fail")
-        self.status.emit("keyboard", state)
+        self.status.emit("keyboard", light_state(score_keyboard(summary).status))
         self.log.emit(f"[KEY] Coverage {cov}% — "
                       f"{len(summary['dead_or_missed'])} unconfirmed.")
         self.finished.emit(self._result)

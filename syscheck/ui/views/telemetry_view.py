@@ -3,6 +3,7 @@ storage, and battery cards as each stage reports back."""
 
 from __future__ import annotations
 
+from html import escape
 from typing import Dict
 
 from PySide6.QtCore import Qt, Signal
@@ -10,9 +11,13 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QWidget)
 
 from ... import config
+from ...diskhealth.describe import (SOURCE_LABELS, assess, condition,
+                                    data_words, on_time_words, size_words,
+                                    temperature_words)
+from ...scoring import score_battery, score_storage
 from ...workers import TelemetryWorker
 from ..widgets import CircularProgress
-from ._common import label, panel
+from ._common import health_color, label, light_state, panel
 
 
 def _card(title: str) -> tuple:
@@ -69,7 +74,7 @@ class TelemetryView(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._btn = QPushButton("PROCEED TO BATTERY  ▶")
+        self._btn = QPushButton("PROCEED TO STORAGE  ▶")
         self._btn.setEnabled(False)
         self._btn.clicked.connect(self.next_requested.emit)
         btn_row.addWidget(self._btn)
@@ -93,6 +98,12 @@ class TelemetryView(QWidget):
         self._worker.finished_all.connect(self._on_finished)
         self._worker.start()
 
+    def stop_worker(self) -> None:
+        # A WMI query in flight can't be interrupted; stop after the stage.
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(10000)
+
     # ── slots ─────────────────────────────────────────────────────────
     def _on_progress(self, pct: int) -> None:
         self._ring.set_value(pct)
@@ -103,10 +114,12 @@ class TelemetryView(QWidget):
             self._sys_body.setText(self._fmt_specs(data))
         elif key == "storage":
             self._stor_body.setText(self._fmt_storage(data))
-            self.status.emit("storage", self._storage_state(data))
+            self.status.emit("storage",
+                             light_state(score_storage(data).status))
         elif key == "battery":
             self._batt_body.setText(self._fmt_battery(data))
-            self.status.emit("battery", self._battery_state(data))
+            self.status.emit("battery",
+                             light_state(score_battery(data).status))
 
     def _on_finished(self, results: dict) -> None:
         self._results = results
@@ -149,14 +162,21 @@ class TelemetryView(QWidget):
             return "· no drive telemetry"
         out = ""
         for dr in drives:
-            poh = dr.get("power_on_hours")
-            tbw = dr.get("host_writes_tb")
-            out += self._row("DRIVE", f"{dr.get('model', '?')}")
-            out += self._row("", f"health: {dr.get('health', '?')}")
-            out += self._row("", f"on-hours: "
-                                f"{poh if poh is not None else 'n/a'}")
-            out += self._row("", f"written: "
-                                f"{f'{tbw:.1f} TB' if tbw is not None else 'n/a'}")
+            a = assess(dr)
+            pct = a.health.health_pct
+            health = (f"{pct}% {condition(pct)}" if pct is not None
+                      else "unknown")
+            out += self._row("DRIVE", escape(a.name))
+            out += self._row("", f"{dr.get('kind')} · "
+                                 f"{size_words(dr.get('size_gb'))}")
+            out += self._row("HEALTH", f"<span style='color:"
+                                       f"{health_color(pct)}'>{health}</span>")
+            out += self._row("TEMP", temperature_words(
+                dr.get("temperature_c"), dr.get("temperature_max_c")))
+            out += self._row("ON-TIME", on_time_words(dr.get("power_on_hours")))
+            out += self._row("WRITTEN", data_words(dr.get("host_writes_tb")))
+            out += self._row("SOURCE", SOURCE_LABELS.get(dr.get("source"),
+                                                         "?"))
         if not d.get("smart_readable", False):
             out += (f"<span style='color:{config.COL_AMBER}'>"
                     f"· run elevated for full S.M.A.R.T.</span>")
@@ -167,28 +187,8 @@ class TelemetryView(QWidget):
             return "· no battery (desktop)"
         cycles = d.get("cycles")
         cycles_str = str(cycles) if cycles is not None else "n/a"
-        return (self._row("WEAR", f"{d.get('wear_pct', '?')}%")
-                + self._row("DESIGN", f"{d.get('design_mwh', '?')} mWh")
-                + self._row("FULL", f"{d.get('full_mwh', '?')} mWh")
-                + self._row("CYCLES", cycles_str))
-
-    # ── status mapping for the indicator lights ───────────────────────
-    @staticmethod
-    def _storage_state(d: dict) -> str:
-        for dr in d.get("drives", []):
-            if dr.get("health") == "FAILING":
-                return "fail"
-        return "pass"
-
-    @staticmethod
-    def _battery_state(d: dict) -> str:
-        if not d.get("present"):
-            return "idle"
         wear = d.get("wear_pct")
-        if wear is None:
-            return "warn"
-        if wear >= config.BATTERY_WEAR_FAIL_PCT:
-            return "fail"
-        if wear >= config.BATTERY_WEAR_WARN_PCT:
-            return "warn"
-        return "pass"
+        return (self._row("WEAR", f"{wear}%" if wear is not None else "n/a")
+                + self._row("DESIGN", f"{d.get('design_mwh') or '?'} mWh")
+                + self._row("FULL", f"{d.get('full_mwh') or '?'} mWh")
+                + self._row("CYCLES", cycles_str))

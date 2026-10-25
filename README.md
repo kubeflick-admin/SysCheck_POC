@@ -15,15 +15,22 @@ then renders a single **A / B / C / F** health score.
 | Module | What it does |
 | ------ | ------------ |
 | **Core specs**      | CPU, cores, RAM size/speed, GPU(s)/VRAM, motherboard, BIOS |
-| **Storage health**  | S.M.A.R.T. power-on hours, total host writes, failure-predict status |
+| **Storage health**  | A 0–100 **Drive Health %** per drive from its S.M.A.R.T. damage counters, SSD wear and the drive's own verdict, plus an estimated remaining life, in plain English |
+| **Storage page**    | Per drive: Health % bar, summary, remaining life, model / serial / firmware / interface / size, temperatures, power-on time, data written / read and the full S.M.A.R.T. table |
 | **Battery health**  | Design vs full-charge capacity, wear %, cycle count |
-| **Battery discharge** | Prompts to unplug AC, then times a live 1% drop and derives the average draw (W) and CPU load behind it |
-| **Thermal stress**  | 45 s all-core NumPy load with live temperature graph + throttle detection |
+| **Battery discharge** | Prompts to unplug AC, then measures the average draw (W), time per 1% and the CPU load behind it |
+| **Thermal stress**  | 45 s all-core NumPy load with live temperature graph + throttle detection (sustained clock vs base clock) |
 | **Camera clarity**  | Live webcam feed, Laplacian-variance focus score, clean-the-lens re-check |
 | **Keyboard test**   | "Piano roll" layout that lights each key as it registers |
 | **Touchpad test**   | Cursor-coverage grid plus left/right/double-click and scroll gesture checks |
 | **Ports test**      | Live USB plug/unplug detection per port, with USB + display-output inventory |
+| **Performance & hangs** | About 2 minutes: idle load, processor (one core and all cores, clock held), memory bandwidth, drive speed (sequential and 4 KB random), stutter/freeze timing at idle and under load, startup programs, power plan and 30 days of crash/hang history. Gives a 0–100 score with a label (Fast / Good / OK for basic use / Slow), a "Why it might hang" list with plain fixes, most likely first, and a typical-use guide |
 | **Health score**    | Weighted A/B/C/F verdict with a plain-language per-subsystem summary |
+| **Export report**   | One self-contained HTML file (opens in any browser, prints to PDF) with the grade, every result, the full storage section and the performance section; serial numbers can be hidden |
+
+Checks that ran but couldn't verify a part (no USB device plugged in, a
+sensor that can't be read, a webcam that won't open) are reported as
+**Not verified**. They are left out of the grade instead of failing it.
 
 ## Project layout
 
@@ -31,30 +38,54 @@ then renders a single **A / B / C / F** health score.
 SysCheck_POC/
 ├── main.py                     # entry point
 ├── requirements.txt
+├── requirements-dev.txt        # test / lint dependencies
+├── pyproject.toml              # pytest + ruff settings
 ├── build.ps1                   # PyInstaller build script
 ├── README.md
+├── tests/                      # headless pytest suite (fake hardware)
+├── vendor/smartmontools/       # bundled smartctl.exe + licence + source note
 └── syscheck/
     ├── config.py               # all thresholds + palette
     ├── scoring.py              # telemetry -> A/B/C/F grade
+    ├── export.py               # single-file HTML report
+    ├── diskhealth/             # Qt- and WMI-free drive judgement
+    │   ├── health.py           # Health % + estimated remaining life
+    │   └── describe.py         # plain-English wording, S.M.A.R.T. table rows
+    ├── perf/                   # Qt- and WMI-free performance judgement
+    │   ├── stutter.py          # stutter / freeze gap counting
+    │   ├── events.py           # event-log parsing, recent-reinstall check
+    │   ├── system.py           # power plan, startup items, memory channels
+    │   ├── score.py            # sub-scores, 0–100 score, label, use guide
+    │   ├── hangs.py            # "why it might hang" rules
+    │   └── describe.py         # plain-English rows and technical lines
     ├── telemetry/              # MODULE 1 — silent hardware telemetry
     │   ├── wmi_util.py         # per-thread COM/WMI helper
     │   ├── specs.py            # CPU / RAM / GPU / board / BIOS
-    │   ├── storage.py          # S.M.A.R.T. parsing
-    │   ├── battery.py          # ACPI + powercfg report, + 1%-drop discharge test
+    │   ├── storage.py          # drive list + layered S.M.A.R.T. collection
+    │   ├── smart_sources/      # one module per S.M.A.R.T. source
+    │   │   ├── schema.py       # normalised per-drive record
+    │   │   ├── smartctl.py     # A: bundled smartctl, JSON output
+    │   │   ├── reliability.py  # B: MSFT_StorageReliabilityCounter
+    │   │   ├── wmi_smart.py    # C: MSStorageDriver_FailurePredict* blobs
+    │   │   └── matching.py     # same drive across sources
+    │   ├── battery.py          # ACPI + powercfg report, + discharge test
     │   ├── thermal.py          # synthetic load + sensor sampling
-    │   └── ports.py            # USB enumeration + display-output detection
+    │   ├── ports.py            # USB enumeration + display-output detection
+    │   ├── performance.py      # the performance & hang check, stage by stage
+    │   └── disk_speed.py       # unbuffered drive test on one temporary file
     ├── diagnostics/            # MODULE 2 — user-guided (Qt-free logic)
     │   ├── camera.py           # Laplacian-variance focus scoring
     │   ├── keyboard.py         # layout data + actuation state machine
     │   └── touchpad.py         # cursor-coverage grid + gesture state machine
     ├── workers/
-    │   └── threads.py          # QThread workers (telemetry/battery/thermal/camera/ports)
+    │   └── threads.py          # QThread workers (telemetry/battery/thermal/camera/ports/performance)
     └── ui/
         ├── theme.py            # QSS cyber-HUD stylesheet
         ├── widgets.py          # progress ring, console, indicator, graph
         ├── main_window.py      # console rail + stacked diagnostic flow
-        └── views/              # splash, telemetry, battery, thermal, camera,
-                                #   keyboard, touchpad, ports, results
+        └── views/              # splash, telemetry, storage, battery, thermal,
+                                #   camera, keyboard, touchpad, ports,
+                                #   performance, results
 ```
 
 ## Run from source
@@ -66,7 +97,32 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Requires **Python 3.11+** on Windows 10/11.
+Requires **Python 3.11 or 3.12** on Windows 10/11. The pinned dependencies
+have no wheels for 3.13+ yet. Use the python.org installer, not the
+Microsoft Store placeholder.
+
+You don't need to rebuild the .exe to try a change: run `python main.py`
+again. From a WSL checkout, a Windows venv can run it in place:
+
+```powershell
+C:\dev\syscheck-venv\Scripts\python \\wsl.localhost\Ubuntu\home\<user>\SysCheck_POC\main.py
+```
+
+## Tests
+
+The scoring, diagnostics, discharge and thermal logic, and the views, are
+tested headlessly. Hardware readings are faked, so the suite runs on
+Linux/WSL or Windows with no laptop-specific setup:
+
+```bash
+python -m venv .venv-test
+.venv-test/bin/pip install -r requirements-dev.txt
+.venv-test/bin/pytest
+.venv-test/bin/ruff check .
+```
+
+Real-hardware behaviour (WMI, sensors, webcam, USB) still needs a manual
+run on Windows, preferably elevated.
 
 ## Build a standalone .exe
 
@@ -80,29 +136,99 @@ Or the exact one-liner (no console window):
 ```powershell
 pyinstaller --noconfirm --clean --onefile --windowed --name SysCheck ^
   --collect-submodules wmi --collect-submodules cpuinfo ^
-  --collect-data cv2 --hidden-import win32timezone main.py
+  --collect-data cv2 --hidden-import win32timezone ^
+  --add-binary "vendor\smartmontools\smartctl.exe;vendor\smartmontools" ^
+  --add-data "vendor\smartmontools\COPYING.txt;vendor\smartmontools" ^
+  --add-data "vendor\smartmontools\SOURCE.txt;vendor\smartmontools" ^
+  --upx-exclude smartctl.exe main.py
 ```
 
 The result is `dist\SysCheck.exe`.
 
 ## Notes & limitations
 
-- **Administrator rights**: S.M.A.R.T. attributes (`MSStorageDriver_*`) and
-  ACPI thermal zones (`MSAcpi_ThermalZoneTemperature`) frequently require
-  elevation. Without it the app still runs and marks those fields N/A.
+- **Administrator rights**: ACPI thermal zones
+  (`MSAcpi_ThermalZoneTemperature`) and most drive health data need
+  elevation. Without it the app still runs and marks those fields N/A,
+  and the start screen and the report open with a banner saying so.
+- **Drive health sources**: each drive is read by the first of three layers
+  that works: the bundled `smartctl` (JSON output), then Windows'
+  `MSFT_StorageReliabilityCounter`, then the raw ATA S.M.A.R.T. blobs
+  (`MSStorageDriver_*`). NVMe drives are usually readable by `smartctl`
+  without elevation; SATA drives and both Windows layers need
+  Administrator. Readings a layer can't provide show as N/A rather than 0,
+  and data written is only reported when its unit is known.
+- **Drive Health %**: starts at 100% and each damage counter (reallocated,
+  pending and uncorrectable sectors, NVMe media errors, ...) takes a capped
+  share away; the shares multiply, so different problems add up faster.
+  A drive that reports itself failing, a value at its failure threshold, a
+  low NVMe spare and SSD wear cap it further, and the manufacturer's own
+  value-vs-threshold figure wins when lower. Power-on hours never lower
+  health; they shorten the remaining-life estimate, which is always worded
+  as an estimate and capped at "more than 1000 days". All weights are in
+  `config.py`. Without elevation, unreadable drives show health as unknown
+  and the storage score is capped.
+- **Report**: *Export report* on the Verdict page saves
+  `SysCheck_<computer>_<date>.html`. It needs no internet and no other
+  files; use the browser's Print → Save as PDF for a PDF.
+- **Performance check**: the last step before the Verdict. It waits for
+  *Start check* and can be skipped or stopped; a skipped or stopped run is
+  left out of the grade. Everything it does is read-only except one
+  256 MB file in `%TEMP%` for the drive test. The file is opened
+  unbuffered and write-through so the cache can't flatter the result, and
+  it is deleted when the test ends, fails or is stopped. If unbuffered I/O
+  isn't possible, the drive test runs through the cache and isn't scored.
+  One 30 s window measures both the idle load and the idle stutter.
+  The processor test times fixed zlib work units on one thread and then
+  on all threads. It doesn't use NumPy, whose bundled maths library picks
+  a slow fallback on some new CPUs.
+- **Performance score**: each figure is compared with a reference laptop
+  (Core Ultra 7 265H, 32 GB DDR5, SK hynix PC801 NVMe). Matching the
+  reference scores 90, and every halving costs 25 points. Processor 30%,
+  memory 15%, drive 35% and responsiveness (stutters and freezes) 20%
+  make the 0–100 score. Memory is capped for small amounts installed
+  (75 for 8 GB, 45 for 4 GB). The reference values, the bands, the
+  weights and every hang threshold are in `config.py` (`PERF_*`).
+  Performance counts 15% of the overall grade.
+- **Crash and hang history**: Application Hang 1002, Application Error
+  1000, Kernel-Power 41, BugCheck 1001 and disk 7 / 51 / 153 from the last
+  30 days, read with `wevtutil` (no elevation needed). When both the
+  Windows install date and the oldest System event are under 14 days old,
+  the report says "history not available — Windows was reinstalled
+  recently" rather than calling the laptop trouble-free. A feature update
+  resets the install date but not the logs, so it doesn't count.
 - **GPU VRAM**: WMI's `AdapterRAM` is a signed 32-bit field (unreliable above
   4 GB); NVIDIA cards are enriched via `GPUtil` when present.
 - **Thermal sensors**: many consumer laptops don't expose a usable thermal
-  zone to user space; the test then falls back to clock-based throttle
-  detection and reports the sensor as unavailable.
-- **Keyboard right-hand modifiers**: left/right Shift are told apart by scan
-  code; right Ctrl/Alt may remain "unconfirmed" on some layouts.
+  zone to user space, or expose one that never changes. Either way the test
+  reports the sensor as unavailable and falls back to clock-based throttle
+  detection. Throttling means the clock held at the end of the run is well
+  below the CPU's base clock. Dropping from turbo back to base is normal.
+  With neither a sensor nor a throttle signal, thermals are *Not verified*.
+  Stopping the test early leaves it out of the grade.
+- **Keyboard**: left/right Shift, Ctrl and Alt are told apart by Windows scan
+  code. `Fn` is not tested because it never reaches the OS. Hold `Fn` for
+  F-keys that default to media functions.
 - **Battery discharge**: the laptop must run off the battery, so the step waits
-  for the charger to be removed before timing a 1% drop. Windows reports charge
-  as whole percentages, so if a full 1% hasn't dropped within the timeout the
-  tool falls back to the OS's own `secsleft` estimate (flagged as *estimated*).
+  for the charger to be removed. It then uses the battery's own reported
+  discharge rate (`BatteryStatus.DischargeRate`) when the firmware provides
+  one. Otherwise it times a *full* 1% step from one whole-percent drop to the
+  next. Timing from the unplug would catch only part of a percent and
+  overstate the draw. If no full step happens within the timeout, the tool
+  falls back to the OS's own `secsleft` estimate (flagged as an estimate).
   Reconnecting AC mid-test voids the reading.
 - **Ports test**: an empty port can't be verified by software, so the check is
   driven by live USB arrival/removal events — plug a device into each port in
   turn. HDMI/DisplayPort outputs are listed for reference but not actively
   exercised.
+
+## Third-party software
+
+SysCheck bundles **smartctl** from [smartmontools](https://www.smartmontools.org/)
+(version 7.5, official Windows build, unmodified) in `vendor/smartmontools/`.
+smartmontools is © Bruce Allen, Christian Franke and contributors, and is
+licensed under the GNU GPL v2 or later; see
+`vendor/smartmontools/COPYING.txt`. `vendor/smartmontools/SOURCE.txt` lists
+the exact build and where to get its source. SysCheck runs `smartctl.exe`
+as a separate program and reads its JSON output; it is not linked into
+SysCheck.
